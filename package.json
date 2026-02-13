@@ -1,6 +1,6 @@
 {
   "name": "pi-schedule-prompt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A pi extension for scheduling recurring and one-shot agent prompts with cron-like functionality",
   "author": "tintinweb",
   "license": "MIT",
