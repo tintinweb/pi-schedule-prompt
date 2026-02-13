@@ -1,41 +1,4 @@
 {
-  "jobs": [
-    {
-      "id": "5j6HsAeYkc",
-      "name": "job-PXwluQ",
-      "schedule": "0 * * * * *",
-      "prompt": "Say hi",
-      "enabled": true,
-      "type": "cron",
-      "createdAt": "2026-02-13T09:46:10.036Z",
-      "runCount": 10,
-      "description": "Say hi every minute",
-      "lastStatus": "success",
-      "lastRun": "2026-02-13T10:18:00.031Z",
-      "nextRun": "2026-02-13T10:19:00.000Z"
-    },
-    {
-      "id": "hjqcTvBHJq",
-      "name": "job-sEkJhk",
-      "schedule": "0 0 0 * * *",
-      "prompt": "Run the shell command: generate-daily-report",
-      "enabled": true,
-      "type": "cron",
-      "createdAt": "2026-02-13T10:05:36.323Z",
-      "runCount": 0,
-      "description": "Daily report generation"
-    },
-    {
-      "id": "QuEoTx2bir",
-      "name": "job-h3PjB2",
-      "schedule": "2026-02-14T10:06:19.854Z",
-      "prompt": "Run the shell command: whoami",
-      "enabled": true,
-      "type": "once",
-      "createdAt": "2026-02-13T10:06:19.854Z",
-      "runCount": 0,
-      "description": "Run whoami command tomorrow"
-    }
-  ],
+  "jobs": [],
   "version": 1
 }
