@@ -1,0 +1,22 @@
+# Development files
+tsconfig.json
+.vscode/
+.git/
+.gitignore
+
+# Documentation
+PLAN.md
+SUMMARY.md
+plan/
+media/
+
+# Build artifacts
+*.log
+npm-debug.log*
+.DS_Store
+
+# Tests (if any)
+test/
+tests/
+*.test.ts
+*.spec.ts

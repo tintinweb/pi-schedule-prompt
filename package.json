@@ -1,0 +1,46 @@
+{
+  "name": "pi-schedule-prompt",
+  "version": "0.1.0",
+  "description": "A pi extension for scheduling recurring and one-shot agent prompts with cron-like functionality",
+  "author": "tintinweb",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tintinweb/pi-schedule-prompt.git"
+  },
+  "homepage": "https://github.com/tintinweb/pi-schedule-prompt#readme",
+  "bugs": {
+    "url": "https://github.com/tintinweb/pi-schedule-prompt/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "scheduler",
+    "prompt",
+    "automation",
+    "cron",
+    "heartbeat",
+    "defer",
+    "remind"
+  ],
+  "dependencies": {
+    "@mariozechner/pi-ai": "latest",
+    "@mariozechner/pi-coding-agent": "latest",
+    "@mariozechner/pi-tui": "latest",
+    "@sinclair/typebox": "latest",
+    "croner": "^8.0.0",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.33",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "video": "https://github.com/tintinweb/pi-schedule-prompt/raw/master/media/demo.mp4",
+    "image": "https://github.com/tintinweb/pi-schedule-prompt/raw/master/media/screenshot.png"
+  }
+}
