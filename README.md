@@ -1,6 +1,7 @@
 # pi-schedule-prompt
 
-A [Pi](https://pi.dev) extension that schedules AI prompts to execute at specific times or intervals - for reminders, deferred tasks, and recurring automation.
+A [Pi](https://pi.dev) extension for the agent to self-schedule AI prompts to execute at specific times or intervals - for reminders, deferred tasks, and recurring automation.
+
 
 
 <img width="600"  alt="image" src="https://github.com/tintinweb/pi-schedule-prompt/raw/master/media/screenshot.png" />
