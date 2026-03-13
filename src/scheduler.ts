@@ -1,3 +1,6 @@
+import { existsSync } from "fs";
+import { spawn } from "child_process";
+import path from "path";
 import { Cron } from "croner";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { CronJob, CronChangeEvent } from "./types.js";
@@ -107,7 +110,7 @@ export class CronScheduler {
         if (delay > 0) {
           const timeout = setTimeout(() => {
             this.executeJob(job);
-            // Auto-disable one-shot jobs after execution
+            // Auto-disable one-shot jobs after execution attempt
             this.storage.updateJob(job.id, { enabled: false });
             this.emitChange({ type: "update", job: { ...job, enabled: false } });
           }, delay);
@@ -116,14 +119,14 @@ export class CronScheduler {
         } else {
           // Job is in the past - disable it and log warning
           console.warn(`Job ${job.id} (${job.name}) scheduled for past time: ${job.schedule}`);
-          this.storage.updateJob(job.id, { 
+          this.storage.updateJob(job.id, {
             enabled: false,
-            lastStatus: "error" 
+            lastStatus: "error",
           });
-          this.emitChange({ 
-            type: "error", 
-            jobId: job.id, 
-            error: `Scheduled time ${job.schedule} is in the past` 
+          this.emitChange({
+            type: "error",
+            jobId: job.id,
+            error: `Scheduled time ${job.schedule} is in the past`,
           });
         }
       } else {
@@ -173,15 +176,45 @@ export class CronScheduler {
       });
       this.emitChange({ type: "fire", job });
 
-      // Send a visible marker message for the scheduled prompt
-      this.pi.sendMessage(
-        {
-          customType: "scheduled_prompt",
-          content: [{ type: "text", text: job.prompt }],
-          display: true,
-          details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+      if (job.gate) {
+        const gatePassed = await this.runGate(job.gate);
+        if (!gatePassed) {
+          const nextRun = this.getNextRun(job.id);
+          this.storage.updateJob(job.id, {
+            lastRun: new Date().toISOString(),
+            lastStatus: "error",
+            nextRun: nextRun?.toISOString(),
+          });
+
+          this.pi.sendMessage({
+            customType: "scheduled_prompt",
+            content: [{ type: "text", text: job.prompt }],
+            display: true,
+            details: {
+              jobId: job.id,
+              jobName: job.name,
+              prompt: job.prompt,
+              gate: job.gate,
+              gateBlocked: true,
+            },
+          });
+
+          this.emitChange({
+            type: "error",
+            jobId: job.id,
+            error: `Gate exited non-zero for job ${job.name}`,
+          });
+          return;
         }
-      );
+      }
+
+      // Send a visible marker message for the scheduled prompt
+      this.pi.sendMessage({
+        customType: "scheduled_prompt",
+        content: [{ type: "text", text: job.prompt }],
+        display: true,
+        details: { jobId: job.id, jobName: job.name, prompt: job.prompt, gate: job.gate },
+      });
 
       // Then send the actual prompt to the agent
       this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
@@ -208,6 +241,30 @@ export class CronScheduler {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Run a gate command and return true only when it exits with code 0
+   */
+  private async runGate(gate: string): Promise<boolean> {
+    const cwd = this.storage.getCwd();
+    const resolvedGate = CronScheduler.resolveGateCommand(gate, cwd);
+
+    return new Promise<boolean>((resolve) => {
+      const child = spawn(resolvedGate, [], {
+        cwd,
+        stdio: "ignore",
+      });
+
+      child.on("error", (error) => {
+        console.error(`Failed to execute gate \"${resolvedGate}\":`, error);
+        resolve(false);
+      });
+
+      child.on("close", (code) => {
+        resolve(code === 0);
+      });
+    });
   }
 
   /**
@@ -252,7 +309,7 @@ export class CronScheduler {
 
     const value = parseInt(match[1], 10);
     const unit = match[2];
-    
+
     const msMap: Record<string, number> = {
       s: 1000,
       m: 60 * 1000,
@@ -283,5 +340,33 @@ export class CronScheduler {
     };
 
     return value * multipliers[unit];
+  }
+
+  /**
+   * Resolve a gate command against cwd when the executable path is relative.
+   * Supports simple quoted first tokens and leaves non-path commands unchanged.
+   */
+  static resolveGateCommand(gate: string, cwd: string): string {
+    const trimmed = gate.trim();
+    const command =
+      trimmed.length >= 2 &&
+      ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'")))
+        ? trimmed.slice(1, -1)
+        : trimmed;
+
+    if (!command || path.isAbsolute(command) || !CronScheduler.shouldResolveCommand(command, cwd)) {
+      return command;
+    }
+
+    return path.resolve(cwd, command);
+  }
+
+  private static shouldResolveCommand(command: string, cwd: string): boolean {
+    return (
+      command.startsWith(".") ||
+      command.includes("/") ||
+      existsSync(path.resolve(cwd, command))
+    );
   }
 }

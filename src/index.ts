@@ -10,8 +10,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Key } from "@mariozechner/pi-tui";
-import { Container, Text } from "@mariozechner/pi-tui";
+import { Text } from "@mariozechner/pi-tui";
 import { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
 import { createCronTool } from "./tool.js";
@@ -26,13 +25,17 @@ export default async function (pi: ExtensionAPI) {
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
-    const details = message.details as { jobId: string; jobName: string; prompt: string } | undefined;
+    const details = message.details as
+      | { jobId: string; jobName: string; prompt: string; gate?: string; gateBlocked?: boolean }
+      | undefined;
     const jobName = details?.jobName || "Unknown";
     const prompt = details?.prompt || "";
-    
+    const gateBlocked = details?.gateBlocked === true;
+
     return new Text(
-      theme.fg("accent", `🕐 Scheduled: ${jobName}`) + 
-      (prompt ? theme.fg("dim", ` → "${prompt}"`) : ""),
+      theme.fg("accent", `🕐 Scheduled: ${jobName}`) +
+        (prompt ? theme.fg("dim", ` → "${prompt}"`) : "") +
+        (gateBlocked ? theme.fg("dim", " did not fire due to non-zero gate.") : ""),
       0,
       0
     );
@@ -154,6 +157,9 @@ export default async function (pi: ExtensionAPI) {
             lines.push(`${status} ${job.name} (${job.id})`);
             lines.push(`  Schedule: ${job.schedule} | Type: ${job.type}`);
             lines.push(`  Prompt: ${job.prompt}`);
+            if (job.gate) {
+              lines.push(`  Gate: ${job.gate}`);
+            }
             if (nextRun) {
               lines.push(`  Next run: ${nextRun.toISOString()}`);
             }
@@ -198,10 +204,18 @@ export default async function (pi: ExtensionAPI) {
           const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
           if (!prompt) return;
 
+          const gateInput = await ctx.ui.input(
+            "Gate (optional)",
+            "Enter a gate command to run before firing the prompt, or leave blank"
+          );
+
           // Validate and create job
           try {
             let intervalMs: number | undefined;
             let validatedSchedule = schedule;
+            const gate = gateInput
+              ? CronScheduler.resolveGateCommand(gateInput, ctx.cwd)
+              : undefined;
 
             if (jobType === "interval") {
               const parsed = CronScheduler.parseInterval(schedule);
@@ -230,6 +244,7 @@ export default async function (pi: ExtensionAPI) {
               name,
               schedule: validatedSchedule,
               prompt,
+              gate,
               enabled: true,
               type: jobType as any,
               intervalMs,
