@@ -24,6 +24,8 @@ export interface CronJob {
   schedule: string;
   /** The prompt to execute */
   prompt: string;
+  /** Optional gate command that must exit with 0 before the prompt fires */
+  gate?: string;
   /** Whether the job is enabled */
   enabled: boolean;
   /** Type of job */
@@ -84,6 +86,12 @@ export const CronToolParams = Type.Object({
   prompt: Type.Optional(
     Type.String({
       description: "Required for add. The prompt text to execute",
+    })
+  ),
+  gate: Type.Optional(
+    Type.String({
+      description:
+        "Optional gate command. If provided, the scheduled prompt only fires when this command exits with 0. Relative executable paths are resolved against the current working directory.",
     })
   ),
   jobId: Type.Optional(

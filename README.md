@@ -26,6 +26,7 @@ Schedule future prompts with natural language:
   - **Recurring** (cron/interval) — repeats automatically
   - **One-shot** (once) — runs once then auto-disables
 - **Actions**: add, remove, list, enable, disable, update, cleanup
+- **Optional gates**: Run a command before firing; prompts only fire when the gate exits with `0`
 - **Auto-cleanup**: Removes disabled jobs on session exit
 
 ### Use Cases
@@ -85,6 +86,11 @@ You: Remind me to check the deployment logs in 10 minutes
 
 Agent: [calls schedule_prompt with schedule="+10m", prompt="check the deployment logs"]
 ✓ Scheduled job "abc123" to run in 10 minutes
+
+You: Remind me to check the deployment logs in 10 minutes if gate.sh passes
+
+Agent: [calls schedule_prompt with schedule="+10m", prompt="deploy", gate="./gate.sh"]
+✓ Scheduled job "abc123" to run in 10 minutes with gate "/path/to/project/gate.sh"
 ```
 
 The widget displays below your editor (only when jobs exist):

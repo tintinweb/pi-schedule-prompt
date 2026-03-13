@@ -1,10 +1,47 @@
-import type { ToolDefinition, Theme } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
-import type { CronToolParamsType, CronToolDetails, CronJob, CronJobType } from "./types.js";
+import type { CronToolDetails, CronJob, CronJobType } from "./types.js";
 import { CronToolParams } from "./types.js";
 import type { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
+
+function humanizeDuration(value: string): string | null {
+  const match = value.match(/^\+?(\d+)(s|m|h|d)$/);
+  if (!match) return null;
+
+  const amount = Number.parseInt(match[1], 10);
+  const unitMap: Record<string, string> = {
+    s: amount === 1 ? "second" : "seconds",
+    m: amount === 1 ? "minute" : "minutes",
+    h: amount === 1 ? "hour" : "hours",
+    d: amount === 1 ? "day" : "days",
+  };
+
+  return `${amount} ${unitMap[match[2]]}`;
+}
+
+function formatScheduledJobMessage(job: CronJob, originalSchedule: string): string {
+  const gateSuffix = job.gate ? ` with gate "${job.gate}"` : "";
+
+  if (job.type === "once") {
+    const delay = humanizeDuration(originalSchedule);
+    if (delay) {
+      return `✓ Scheduled job "${job.name}" to run in ${delay}${gateSuffix}`;
+    }
+    return `✓ Scheduled job "${job.name}" to run at ${job.schedule}${gateSuffix}`;
+  }
+
+  if (job.type === "interval") {
+    const every = humanizeDuration(originalSchedule);
+    if (every) {
+      return `✓ Scheduled job "${job.name}" to run every ${every}${gateSuffix}`;
+    }
+    return `✓ Scheduled job "${job.name}" to run on interval "${job.schedule}"${gateSuffix}`;
+  }
+
+  return `✓ Scheduled job "${job.name}" with schedule "${job.schedule}"${gateSuffix}`;
+}
 
 /**
  * Create the schedule_prompt tool definition
@@ -17,13 +54,13 @@ export function createCronTool(
     name: "schedule_prompt",
     label: "Schedule Prompt",
     description:
-      "IMPORTANT: For action='add', you MUST provide both 'schedule' parameter AND 'prompt' parameter. Schedule prompts at times/intervals. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Type defaults to 'cron', use 'once' for relative/ISO times. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
+      "IMPORTANT: For action='add', you MUST provide both 'schedule' parameter AND 'prompt' parameter. Schedule prompts at times/intervals. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Optional 'gate' command only allows the prompt to fire when it exits with 0; relative executable paths are resolved against the current working directory. Type defaults to 'cron', use 'once' for relative/ISO times. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
     parameters: CronToolParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const storage = getStorage();
       const scheduler = getScheduler();
-      
+
       // Prevent recursive scheduling from within scheduled prompts
       if (params.action === "add") {
         const entries = ctx.sessionManager.getEntries();
@@ -31,14 +68,14 @@ export function createCronTool(
         const hasScheduledPrompt = recentEntries.some(
           (entry) => entry.type === "custom" && entry.customType === "scheduled_prompt"
         );
-        
+
         if (hasScheduledPrompt) {
           throw new Error(
             "Cannot create scheduled prompts from within a scheduled prompt execution. This prevents infinite loops."
           );
         }
       }
-      
+
       const action = params.action;
       const details: CronToolDetails = {
         action,
@@ -70,6 +107,9 @@ export function createCronTool(
             const type = (params.type || "cron") as CronJobType;
             let intervalMs: number | undefined;
             let schedule = params.schedule;
+            const gate = params.gate
+              ? CronScheduler.resolveGateCommand(params.gate, ctx.cwd)
+              : undefined;
 
             // Parse and validate based on type
             if (type === "interval") {
@@ -94,7 +134,7 @@ export function createCronTool(
                   );
                 }
                 schedule = date.toISOString();
-                
+
                 // Warn if scheduled in the past or very near future
                 const now = Date.now();
                 const delay = date.getTime() - now;
@@ -123,6 +163,7 @@ export function createCronTool(
               name: jobName,
               schedule,
               prompt: params.prompt,
+              gate,
               enabled: true,
               type,
               intervalMs,
@@ -141,7 +182,7 @@ export function createCronTool(
               content: [
                 {
                   type: "text",
-                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${job.schedule}\nPrompt: ${job.prompt}`,
+                  text: formatScheduledJobMessage(job, params.schedule),
                 },
               ],
               details,
@@ -212,7 +253,7 @@ export function createCronTool(
             // Remove all disabled jobs
             const allJobs = storage.getAllJobs();
             const disabledJobs = allJobs.filter((j) => !j.enabled);
-            
+
             if (disabledJobs.length === 0) {
               details.jobs = [];
               return {
@@ -257,6 +298,11 @@ export function createCronTool(
             const updates: Partial<CronJob> = {};
             if (params.name) updates.name = params.name;
             if (params.prompt) updates.prompt = params.prompt;
+            if (params.gate !== undefined) {
+              updates.gate = params.gate
+                ? CronScheduler.resolveGateCommand(params.gate, ctx.cwd)
+                : undefined;
+            }
             if (params.description !== undefined) updates.description = params.description;
 
             if (params.schedule) {
@@ -271,11 +317,16 @@ export function createCronTool(
                 updates.schedule = params.schedule;
                 updates.intervalMs = intervalMs;
               } else if (type === "once") {
-                const date = new Date(params.schedule);
-                if (isNaN(date.getTime())) {
-                  throw new Error(`Invalid timestamp: ${params.schedule}`);
+                const relativeTime = CronScheduler.parseRelativeTime(params.schedule);
+                if (relativeTime) {
+                  updates.schedule = relativeTime;
+                } else {
+                  const date = new Date(params.schedule);
+                  if (isNaN(date.getTime())) {
+                    throw new Error(`Invalid timestamp: ${params.schedule}`);
+                  }
+                  updates.schedule = date.toISOString();
                 }
-                updates.schedule = date.toISOString();
               } else {
                 const validation = CronScheduler.validateCronExpression(params.schedule);
                 if (!validation.valid) {
@@ -325,6 +376,9 @@ export function createCronTool(
               lines.push(`${status} ${job.name} (${job.id})`);
               lines.push(`  Type: ${job.type} | Schedule: ${job.schedule}`);
               lines.push(`  Prompt: ${job.prompt}`);
+              if (job.gate) {
+                lines.push(`  Gate: ${job.gate}`);
+              }
               lines.push(`  ${lastStr} ${nextStr ? `| ${nextStr}` : ""}`);
               lines.push(`  Runs: ${job.runCount} | Status: ${job.lastStatus || "pending"}`);
               if (job.description) {
@@ -415,6 +469,9 @@ export function createCronTool(
             `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${job.schedule}`
           );
           lines.push(`  ${theme.fg("dim", "Prompt:")} ${job.prompt}`);
+          if (job.gate) {
+            lines.push(`  ${theme.fg("dim", "Gate:")} ${job.gate}`);
+          }
           if (job.lastRun) {
             lines.push(`  ${theme.fg("dim", "Last run:")} ${job.lastRun}`);
           }

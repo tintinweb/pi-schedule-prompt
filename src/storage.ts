@@ -6,10 +6,12 @@ import type { CronJob, CronStore } from "./types.js";
  * Handles persistence of scheduled prompts to .pi/schedule-prompts.json
  */
 export class CronStorage {
+  private readonly cwd: string;
   private readonly storePath: string;
   private readonly piDir: string;
 
   constructor(cwd: string) {
+    this.cwd = cwd;
     this.piDir = path.join(cwd, ".pi");
     this.storePath = path.join(this.piDir, "schedule-prompts.json");
   }
@@ -113,6 +115,13 @@ export class CronStorage {
   getAllJobs(): CronJob[] {
     const store = this.load();
     return store.jobs;
+  }
+
+  /**
+   * Get project working directory
+   */
+  getCwd(): string {
+    return this.cwd;
   }
 
   /**
