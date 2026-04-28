@@ -106,10 +106,7 @@ export class CronScheduler {
 
         if (delay > 0) {
           const timeout = setTimeout(() => {
-            this.executeJob(job);
-            // Auto-disable one-shot jobs after execution
-            this.storage.updateJob(job.id, { enabled: false });
-            this.emitChange({ type: "update", job: { ...job, enabled: false } });
+            void this.executeJob(job);
           }, delay);
           // Store as interval for cleanup purposes
           this.intervals.set(job.id, timeout as any);
@@ -164,38 +161,68 @@ export class CronScheduler {
    * Execute a job's prompt
    */
   private async executeJob(job: CronJob): Promise<void> {
-    console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
+    const releaseLock = this.storage.acquireExecutionLock(job.id);
+    if (!releaseLock) {
+      console.log(`Skipping scheduled prompt already running elsewhere: ${job.name} (${job.id})`);
+      return;
+    }
 
     try {
+      const currentJob = this.storage.getJob(job.id);
+      if (!currentJob || !currentJob.enabled) {
+        console.log(`Skipping disabled or removed scheduled prompt: ${job.name} (${job.id})`);
+        return;
+      }
+
+      if (this.wasRecentlyExecuted(currentJob)) {
+        console.log(`Skipping recently executed scheduled prompt: ${job.name} (${job.id})`);
+        return;
+      }
+
+      console.log(`Executing scheduled prompt: ${currentJob.name} (${currentJob.id})`);
+
       // Update status to running
-      this.storage.updateJob(job.id, {
+      this.storage.updateJob(currentJob.id, {
         lastStatus: "running",
       });
-      this.emitChange({ type: "fire", job });
+      this.emitChange({ type: "fire", job: currentJob });
 
       // Send a visible marker message for the scheduled prompt
       this.pi.sendMessage(
         {
           customType: "scheduled_prompt",
-          content: [{ type: "text", text: job.prompt }],
+          content: [{ type: "text", text: currentJob.prompt }],
           display: true,
-          details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+          details: { jobId: currentJob.id, jobName: currentJob.name, prompt: currentJob.prompt },
         }
       );
 
       // Then send the actual prompt to the agent
-      this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
+      this.pi.sendUserMessage(currentJob.prompt, { deliverAs: "followUp" });
 
-      // Update job execution stats
-      const nextRun = this.getNextRun(job.id);
-      this.storage.updateJob(job.id, {
+      // Update job execution stats from the latest stored job to avoid stale
+      // runCount values when multiple pi sessions share the same schedule file.
+      const latestJob = this.storage.getJob(currentJob.id) || currentJob;
+      const nextRun = this.getNextRun(currentJob.id);
+      const updates: Partial<CronJob> = {
         lastRun: new Date().toISOString(),
         lastStatus: "success",
-        runCount: job.runCount + 1,
+        runCount: latestJob.runCount + 1,
         nextRun: nextRun?.toISOString(),
-      });
+      };
 
-      this.emitChange({ type: "fire", job });
+      if (currentJob.type === "once") {
+        updates.enabled = false;
+      }
+
+      this.storage.updateJob(currentJob.id, updates);
+
+      if (currentJob.type === "once") {
+        this.unscheduleJob(currentJob.id);
+        this.emitChange({ type: "update", job: { ...currentJob, ...updates } });
+      }
+
+      this.emitChange({ type: "fire", job: currentJob });
     } catch (error) {
       console.error(`Failed to execute job ${job.id}:`, error);
       this.storage.updateJob(job.id, {
@@ -207,7 +234,33 @@ export class CronScheduler {
         jobId: job.id,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      releaseLock();
     }
+  }
+
+  /**
+   * Return true when another scheduler process already dispatched this job's
+   * expected run. Interval jobs are considered duplicates when they fire again
+   * before most of their interval has elapsed. Cron and one-shot jobs use a
+   * short guard window to catch same-tick executions from another pi session.
+   */
+  private wasRecentlyExecuted(job: CronJob): boolean {
+    if (!job.lastRun) {
+      return false;
+    }
+
+    const lastRunMs = new Date(job.lastRun).getTime();
+    if (Number.isNaN(lastRunMs)) {
+      return false;
+    }
+
+    const elapsedMs = Date.now() - lastRunMs;
+    const minSpacingMs = job.type === "interval" && job.intervalMs
+      ? Math.max(500, Math.floor(job.intervalMs * 0.9))
+      : 900;
+
+    return elapsedMs >= 0 && elapsedMs < minSpacingMs;
   }
 
   /**
