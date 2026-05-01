@@ -24,10 +24,12 @@
     "defer",
     "remind"
   ],
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.70.5",
+    "@mariozechner/pi-coding-agent": ">=0.70.5",
+    "@mariozechner/pi-tui": ">=0.70.5"
+  },
   "dependencies": {
-    "@mariozechner/pi-ai": "latest",
-    "@mariozechner/pi-coding-agent": "latest",
-    "@mariozechner/pi-tui": "latest",
     "@sinclair/typebox": "latest",
     "croner": "^8.0.0",
     "nanoid": "^5.0.0"
