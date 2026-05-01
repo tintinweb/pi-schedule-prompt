@@ -52,7 +52,8 @@ Get prompted to do something once at a specific time:
 - ✓ **Human-readable display**: "every minute", "daily at 9:00" instead of raw cron expressions
 - ✓ **Status tracking**: next run, last run, execution count, errors, prompt preview
 - ✓ **Flexible scheduling**: 6-field cron, intervals (5m, 1h), relative time (+10s), ISO timestamps
-- ✓ **User commands**: `/schedule-prompt` interactive menu with widget visibility toggle
+- ✓ **User commands**: `/schedule-prompt` interactive menu with a `Settings` submenu (current state visible in the row label)
+- ✓ **Persistent settings**: widget visibility persists across sessions and package upgrades (project file overrides global defaults)
 - ✓ **Safety features**: duplicate name prevention, infinite loop detection, past timestamp handling
 
 ## Install
@@ -100,7 +101,7 @@ The widget displays below your editor (only when jobs exist):
 
 | Command | Description |
 |---------|-------------|
-| `/schedule-prompt` | Interactive menu: view/add/toggle/remove jobs, cleanup, toggle widget visibility |
+| `/schedule-prompt` | Interactive menu: view/add/toggle/remove jobs, cleanup, and `Settings` submenu (widget visibility, etc.) |
 
 ### Schedule Formats
 
@@ -135,9 +136,8 @@ The tool accepts multiple time formats:
 ## How It Works
 
 **Storage:**
-- File-based persistence at `.pi/schedule-prompts.json` (project-local)
-- Atomic writes prevent corruption
-- Auto-creates directory structure
+- Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
+- Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
 
 **Scheduler:**
 - Uses `croner` library for cron expressions
@@ -160,7 +160,7 @@ The tool accepts multiple time formats:
 - Shows: status icon, name, schedule (human-readable), prompt (truncated), next run, last run, run count
 - Human-readable formatting: "every minute", "daily", "Feb 13 15:30" instead of raw cron/ISO
 - Auto-refreshes every 30 seconds
-- Toggleable visibility via `/schedule-prompt` menu
+- Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<cwd>/.pi/schedule-prompts-settings.json`, with `~/.pi/agent/schedule-prompts-settings.json` as the global default
 - Status icons: `✓` enabled, `✗` disabled, `⟳` running, `!` error
 
 ## Examples
@@ -212,7 +212,8 @@ pi -e ./src/index.ts
 ```
 src/
   types.ts          # CronJob, CronJobType, CronToolParams
-  storage.ts        # File-based persistence (.pi/schedule-prompts.json)
+  storage.ts        # Job persistence (.pi/schedule-prompts.json)
+  settings.ts       # Settings persistence (global + project, project overrides)
   scheduler.ts      # Core scheduling engine with croner
   tool.ts           # schedule_prompt tool definition
   ui/

@@ -1,7 +1,7 @@
 {
   "name": "pi-schedule-prompt",
   "version": "0.1.2",
-  "description": "A pi extension for scheduling recurring and one-shot agent prompts with cron-like functionality",
+  "description": "Pi's Heartbeat - A pi extension for scheduling recurring and one-shot agent prompts with cron-like functionality",
   "author": "tintinweb",
   "license": "MIT",
   "repository": {

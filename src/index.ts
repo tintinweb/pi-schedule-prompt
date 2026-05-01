@@ -5,8 +5,7 @@
  * - A `schedule_prompt` tool for managing scheduled prompts
  * - A widget displaying all scheduled prompts with status
  * - /schedule-prompt command for interactive management
- * - Ctrl+Alt+P shortcut to toggle widget
- * - Persistence via .pi/schedule-prompts.json
+ * - Persistence via .pi/schedule-prompts.json (jobs) and .pi/schedule-prompts-settings.json (settings)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -16,6 +15,7 @@ import { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
+import { loadSettings, saveSettings } from "./settings.js";
 import { nanoid } from "nanoid";
 
 export default async function (pi: ExtensionAPI) {
@@ -52,6 +52,9 @@ export default async function (pi: ExtensionAPI) {
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
+
+    const s = loadSettings(ctx.cwd);
+    if (typeof s.widgetVisible === "boolean") widgetVisible = s.widgetVisible;
 
     // Load and start all enabled jobs
     scheduler.start();
@@ -124,7 +127,7 @@ export default async function (pi: ExtensionAPI) {
         "Toggle Job (Enable/Disable)",
         "Remove Job",
         "Cleanup Disabled Jobs",
-        "Toggle Widget Visibility",
+        "Settings",
       ]);
 
       if (!action) return;
@@ -135,7 +138,7 @@ export default async function (pi: ExtensionAPI) {
         "Toggle Job (Enable/Disable)": "toggle",
         "Remove Job": "remove",
         "Cleanup Disabled Jobs": "cleanup",
-        "Toggle Widget Visibility": "toggleWidget",
+        "Settings": "settings",
       };
       const actionKey = actionMap[action];
 
@@ -192,8 +195,9 @@ export default async function (pi: ExtensionAPI) {
             schedulePrompt = "Enter interval (e.g., 5m, 1h, 30s)";
           }
 
-          const schedule = await ctx.ui.input("Schedule", schedulePrompt);
-          if (!schedule) return;
+          const scheduleRaw = await ctx.ui.input("Schedule", schedulePrompt);
+          if (!scheduleRaw) return;
+          const schedule = scheduleRaw.trim();
 
           const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
           if (!prompt) return;
@@ -330,16 +334,27 @@ export default async function (pi: ExtensionAPI) {
           break;
         }
 
-        case "toggleWidget": {
-          widgetVisible = !widgetVisible;
-          if (widgetVisible) {
-            widget.show(ctx);
-            ctx.ui.notify("Widget enabled (shows when jobs exist)", "info");
-          } else {
-            widget.hide(ctx);
-            ctx.ui.notify("Widget disabled (hidden)", "info");
+        case "settings": {
+          // Loop so the menu redraws with current state after each change —
+          // the menu is the truth display; only persist failures need a toast.
+          while (true) {
+            const choice = await ctx.ui.select("Settings", [
+              `Widget visibility: ${widgetVisible ? "shown" : "hidden"}`,
+              "Back",
+            ]);
+            if (!choice || choice === "Back") return;
+            if (choice.startsWith("Widget visibility:")) {
+              widgetVisible = !widgetVisible;
+              widgetVisible ? widget.show(ctx) : widget.hide(ctx);
+              const persisted = saveSettings(ctx.cwd, { widgetVisible });
+              if (!persisted) {
+                ctx.ui.notify(
+                  `Widget ${widgetVisible ? "shown" : "hidden"} (session only; failed to persist)`,
+                  "warning",
+                );
+              }
+            }
           }
-          break;
         }
       }
     },
