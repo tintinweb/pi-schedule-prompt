@@ -269,23 +269,13 @@ export class CronScheduler {
 
         const nextRun = this.getNextRun(job.id);
 
+        // Always advance the storage state to a terminal status BEFORE attempting
+        // to post the marker. The marker is best-effort (pi may be invalidated
+        // during teardown) and must never leave the job stuck in "running".
         if (result.ok) {
           const snippet = result.text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
             ? result.text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
             : result.text;
-          this.pi.sendMessage({
-            customType: "scheduled_prompt",
-            content: [{ type: "text", text: snippet }],
-            display: true,
-            details: {
-              jobId: job.id,
-              jobName: job.name,
-              prompt: job.prompt,
-              mode: "subagent_done",
-              model,
-              output: snippet,
-            },
-          }, { deliverAs: "followUp", triggerTurn: notify });
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "success",
@@ -293,30 +283,51 @@ export class CronScheduler {
             nextRun: nextRun?.toISOString(),
           });
           this.emitChange({ type: "fire", job });
+          try {
+            this.pi.sendMessage({
+              customType: "scheduled_prompt",
+              content: [{ type: "text", text: snippet }],
+              display: true,
+              details: {
+                jobId: job.id,
+                jobName: job.name,
+                prompt: job.prompt,
+                mode: "subagent_done",
+                model,
+                output: snippet,
+              },
+            }, { deliverAs: "followUp", triggerTurn: notify });
+          } catch (markerErr) {
+            console.error(`Failed to post subagent_done marker for job ${job.id}:`, markerErr);
+          }
         } else {
-          this.pi.sendMessage({
-            customType: "scheduled_prompt",
-            content: [{ type: "text", text: result.error }],
-            display: true,
-            details: {
-              jobId: job.id,
-              jobName: job.name,
-              prompt: job.prompt,
-              mode: "subagent_error",
-              model,
-              error: result.error,
-            },
-          }, { deliverAs: "followUp", triggerTurn: notify });
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "error",
             nextRun: nextRun?.toISOString(),
           });
           this.emitChange({ type: "error", jobId: job.id, error: result.error });
+          try {
+            this.pi.sendMessage({
+              customType: "scheduled_prompt",
+              content: [{ type: "text", text: result.error }],
+              display: true,
+              details: {
+                jobId: job.id,
+                jobName: job.name,
+                prompt: job.prompt,
+                mode: "subagent_error",
+                model,
+                error: result.error,
+              },
+            }, { deliverAs: "followUp", triggerTurn: notify });
+          } catch (markerErr) {
+            console.error(`Failed to post subagent_error marker for job ${job.id}:`, markerErr);
+          }
         }
       } catch (error) {
-        // Catch-all guard: pi may be invalidated during teardown, sendMessage
-        // may throw, etc. Don't let an unhandled rejection escape the IIFE.
+        // Outer backstop: anything else (e.g. storage write failure) shouldn't
+        // escape the IIFE as an unhandled rejection.
         console.error(`Subagent completion handler failed for job ${job.id}:`, error);
       }
     })();

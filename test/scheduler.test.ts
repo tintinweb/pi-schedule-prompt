@@ -59,13 +59,6 @@ function exampleJob(overrides: Partial<CronJob> = {}): CronJob {
   };
 }
 
-// Wait for fire-and-forget IIFEs to settle.
-async function flushMicrotasks(turns = 4) {
-  for (let i = 0; i < turns; i++) {
-    await Promise.resolve();
-  }
-}
-
 describe("CronScheduler — subagent path marker delivery", () => {
   beforeEach(() => {
     mockRunSubagentOnce.mockReset();
@@ -96,9 +89,8 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
-    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
     const [doneMsg, doneOpts] = pi.sendMessage.mock.calls[1];
     expect(doneMsg.details.mode).toBe("subagent_done");
     expect(doneMsg.details.output).toBe("OK");
@@ -112,7 +104,7 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const [, doneOpts] = pi.sendMessage.mock.calls[1];
     expect(doneOpts).toEqual({ deliverAs: "followUp", triggerTurn: true });
@@ -125,9 +117,8 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
-    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
     const [errMsg, errOpts] = pi.sendMessage.mock.calls[1];
     expect(errMsg.details.mode).toBe("subagent_error");
     expect(errMsg.details.error).toBe("model exploded");
@@ -142,7 +133,7 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const [doneMsg] = pi.sendMessage.mock.calls[1];
     expect(doneMsg.details.output).toHaveLength(501); // 500 + ellipsis char
@@ -157,10 +148,9 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(storage, pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(storage.getJob("job-1").lastStatus).toBe("success"));
 
     const updated = storage.getJob("job-1");
-    expect(updated.lastStatus).toBe("success");
     expect(updated.runCount).toBe(4);
     expect(updated.lastRun).toBeDefined();
   });
@@ -173,11 +163,9 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const scheduler = new CronScheduler(storage, pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(storage.getJob("job-1").lastStatus).toBe("error"));
 
-    const updated = storage.getJob("job-1");
-    expect(updated.lastStatus).toBe("error");
-    expect(updated.runCount).toBe(7);
+    expect(storage.getJob("job-1").runCount).toBe(7);
   });
 });
 
@@ -202,10 +190,8 @@ describe("CronScheduler — shutdown abort", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
-
-    // The signal was passed in but hasn't aborted yet.
-    expect(receivedSignal).toBeDefined();
+    // Wait until the IIFE has actually invoked the runner and we have its signal.
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
     expect(receivedSignal!.aborted).toBe(false);
 
     scheduler.stop();
@@ -213,12 +199,13 @@ describe("CronScheduler — shutdown abort", () => {
 
     // Cleanup the dangling promise so vitest doesn't complain.
     resolveRun({ ok: true, text: "" });
-    await flushMicrotasks();
   });
 
   it("does not post completion markers for runs aborted by stop()", async () => {
     let resolveRun!: (r: { ok: true; text: string }) => void;
+    let signalReceived = false;
     mockRunSubagentOnce.mockImplementation(async (_ctx, _prompt, _model, signal) => {
+      signalReceived = true;
       return new Promise((resolve) => {
         resolveRun = resolve;
         signal?.addEventListener("abort", () => resolve({ ok: false, error: "aborted" } as any));
@@ -230,19 +217,17 @@ describe("CronScheduler — shutdown abort", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
-
+    await vi.waitFor(() => expect(signalReceived).toBe(true));
     expect(pi.sendMessage).toHaveBeenCalledTimes(1); // start only
 
     scheduler.stop();
-    await flushMicrotasks();
 
-    // No done/error marker should be posted because the signal was aborted —
-    // pi may be invalidated, so the IIFE bails before touching it.
+    // Wait for the IIFE to clean itself up after abort.
+    await vi.waitFor(() => expect((scheduler as any).activeSubagents.size).toBe(0));
+    // No done/error marker should be posted because the signal was aborted.
     expect(pi.sendMessage).toHaveBeenCalledTimes(1);
 
     resolveRun({ ok: true, text: "" });
-    await flushMicrotasks();
   });
 
   it("clears activeSubagents after a natural completion", async () => {
@@ -252,13 +237,10 @@ describe("CronScheduler — shutdown abort", () => {
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
-
-    // Internal set should be empty after the IIFE's finally runs.
-    expect((scheduler as any).activeSubagents.size).toBe(0);
+    await vi.waitFor(() => expect((scheduler as any).activeSubagents.size).toBe(0));
   });
 
-  it("survives a thrown sendMessage during completion (no unhandled rejection)", async () => {
+  it("survives a thrown sendMessage and still advances storage to a terminal status", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "done" });
     const pi = makePi();
     let firstCall = true;
@@ -272,16 +254,21 @@ describe("CronScheduler — shutdown abort", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const job = exampleJob({ model: "haiku" });
-    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(consoleSpy).toHaveBeenCalled());
 
-    // The throw inside the IIFE was caught by the try/catch and logged
-    // rather than escaping as an unhandled rejection.
-    expect(consoleSpy).toHaveBeenCalled();
+    // Storage was advanced before the marker post, so the job is NOT stuck in "running"
+    // even though sendMessage threw. This is the regression guard for the "stuck running"
+    // failure mode.
+    expect(storage.getJob("job-1").lastStatus).toBe("success");
+    expect(storage.getJob("job-1").runCount).toBe(1);
+
+    // The marker failure was logged via the inner try/catch (not the outer backstop).
     const loggedMessage = consoleSpy.mock.calls[0][0] as string;
-    expect(loggedMessage).toContain(`Subagent completion handler failed for job ${job.id}`);
+    expect(loggedMessage).toContain(`Failed to post subagent_done marker for job ${job.id}`);
     consoleSpy.mockRestore();
   });
 });
