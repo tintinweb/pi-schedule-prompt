@@ -16,6 +16,7 @@ import { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
+import { loadSettings, saveSettings } from "./settings.js";
 import { nanoid } from "nanoid";
 
 export default async function (pi: ExtensionAPI) {
@@ -52,6 +53,9 @@ export default async function (pi: ExtensionAPI) {
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
+
+    const s = loadSettings(ctx.cwd);
+    if (typeof s.widgetVisible === "boolean") widgetVisible = s.widgetVisible;
 
     // Load and start all enabled jobs
     scheduler.start();
@@ -332,13 +336,15 @@ export default async function (pi: ExtensionAPI) {
 
         case "toggleWidget": {
           widgetVisible = !widgetVisible;
-          if (widgetVisible) {
-            widget.show(ctx);
-            ctx.ui.notify("Widget enabled (shows when jobs exist)", "info");
-          } else {
-            widget.hide(ctx);
-            ctx.ui.notify("Widget disabled (hidden)", "info");
-          }
+          widgetVisible ? widget.show(ctx) : widget.hide(ctx);
+          const persisted = saveSettings(ctx.cwd, { widgetVisible });
+          const msg = widgetVisible
+            ? "Widget enabled (shows when jobs exist)"
+            : "Widget disabled (hidden)";
+          ctx.ui.notify(
+            persisted ? msg : `${msg} (session only; failed to persist)`,
+            persisted ? "info" : "warning",
+          );
           break;
         }
       }
