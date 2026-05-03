@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, Spacer, Text } from "@mariozechner/pi-tui";
-import type { CronScheduler } from "../scheduler.js";
+import { CronScheduler, formatISOShort, humanizeCron } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 
 const WIDGET_ID = "schedule-prompts";
@@ -42,144 +42,56 @@ function formatRelativeTime(date: Date | string): string {
 }
 
 /**
- * Convert cron expression to human-readable text
- */
-function humanizeCron(expression: string): string {
-  // Common patterns (6-field format)
-  const patterns: Record<string, string> = {
-    '* * * * * *': 'every second',
-    '0 * * * * *': 'every minute',
-    '0 */5 * * * *': 'every 5 min',
-    '0 */10 * * * *': 'every 10 min',
-    '0 */15 * * * *': 'every 15 min',
-    '0 */30 * * * *': 'every 30 min',
-    '0 0 * * * *': 'every hour',
-    '0 0 */2 * * *': 'every 2 hours',
-    '0 0 */3 * * *': 'every 3 hours',
-    '0 0 */6 * * *': 'every 6 hours',
-    '0 0 0 * * *': 'daily',
-    '0 0 0 * * 0': 'weekly',
-    '0 0 0 1 * *': 'monthly',
-    '0 0 9 * * 1-5': '9am weekdays',
-    '0 0 0 * * 1-5': 'weekdays',
-    '0 0 0 * * 0,6': 'weekends',
-  };
-
-  // Check exact match first
-  const normalized = expression.trim();
-  if (patterns[normalized]) {
-    return patterns[normalized];
-  }
-
-  // Parse */N patterns for minutes/hours
-  const match = normalized.match(/^0 \*\/(\d+) \* \* \* \*$/);
-  if (match) {
-    return `every ${match[1]} min`;
-  }
-
-  const hourMatch = normalized.match(/^0 0 \*\/(\d+) \* \* \*$/);
-  if (hourMatch) {
-    return `every ${hourMatch[1]}h`;
-  }
-
-  // Specific time pattern (0 0 HH * * *)
-  const timeMatch = normalized.match(/^0 0 (\d+) \* \* \*$/);
-  if (timeMatch) {
-    const hour = parseInt(timeMatch[1], 10);
-    return `daily at ${hour}:00`;
-  }
-
-  // Fallback to truncated expression
-  return normalized.length > 15 ? normalized.substring(0, 12) + '...' : normalized;
-}
-
-/**
- * Format ISO timestamp to short readable format (e.g., "Feb 13 15:30")
- */
-function formatISOShort(iso: string): string {
-  try {
-    const date = new Date(iso);
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const month = months[date.getMonth()];
-    const day = date.getDate();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${month} ${day} ${hours}:${minutes}`;
-  } catch {
-    // Fallback if parsing fails
-    return iso.length > 18 ? iso.substring(0, 15) + '...' : iso;
-  }
-}
-
-/**
  * Create and manage the cron widget
  */
 export class CronWidget {
   private refreshInterval?: NodeJS.Timeout;
-  private invalidateFn?: () => void;
+  private ctx?: any;
+  private unsubscribe: () => void;
 
   constructor(
     private storage: CronStorage,
     private scheduler: CronScheduler,
     private pi: ExtensionAPI,
-    private isVisible: () => boolean
+    private isVisible: () => boolean,
+    private sessionId: string | undefined = undefined,
   ) {
-    // Listen for cron changes to refresh widget
-    this.pi.events.on("cron:change", () => {
-      this.refresh();
-    });
+    // Re-render on add/remove/update/fire/error so the row count, status icons,
+    // and counters stay current without waiting for the 30s tick.
+    this.unsubscribe = this.pi.events.on("cron:change", () => this.refresh());
   }
 
-  /**
-   * Show the widget
-   */
-  show(ctx: any): void {
-    // Respect visibility setting
-    if (!this.isVisible()) {
-      this.hide(ctx);
-      return;
-    }
+  /** Jobs this session loads — same predicate as the scheduler. */
+  private loadedJobs() {
+    return this.storage
+      .getAllJobs()
+      .filter((j) => CronScheduler.isLoadedFor(j, this.sessionId));
+  }
 
-    // Auto-hide if no jobs configured
-    const jobs = this.storage.getAllJobs();
-    if (jobs.length === 0) {
+  show(ctx: any): void {
+    this.ctx = ctx;
+
+    if (!this.isVisible() || this.loadedJobs().length === 0) {
       this.hide(ctx);
       return;
     }
 
     ctx.ui.setWidget(
       WIDGET_ID,
-      (_tui: any, theme: any) => {
-        const component = {
-          render: (width: number) => this.renderWidget(width, theme),
-          invalidate: () => {
-            this.invalidateFn = () => {
-              if (ctx.ui) {
-                this.show(ctx);
-              }
-            };
-          },
-        };
-
-        // Auto-refresh every 30 seconds
-        if (this.refreshInterval) {
-          clearInterval(this.refreshInterval);
-        }
-        this.refreshInterval = setInterval(() => {
-          if (this.invalidateFn) {
-            this.invalidateFn();
-          }
-        }, 30000);
-
-        return component;
-      },
-      { placement: "belowEditor" }
+      (_tui: any, theme: any) => ({
+        render: (width: number) => this.renderWidget(width, theme),
+        invalidate: () => {},
+      }),
+      { placement: "belowEditor" },
     );
+
+    // 30s tick re-renders so relative-time labels ("in 5m") update even when
+    // nothing else changes. Same path as cron:change-driven refresh.
+    if (!this.refreshInterval) {
+      this.refreshInterval = setInterval(() => this.refresh(), 30000);
+    }
   }
 
-  /**
-   * Hide the widget
-   */
   hide(ctx: any): void {
     ctx.ui.setWidget(WIDGET_ID, undefined);
     if (this.refreshInterval) {
@@ -188,21 +100,18 @@ export class CronWidget {
     }
   }
 
-  /**
-   * Refresh the widget display
-   */
+  /** Re-mount the widget against the latest storage state. `show` handles the
+   *  visibility / empty-list / first-mount cases uniformly. */
   private refresh(): void {
-    if (this.invalidateFn) {
-      this.invalidateFn();
-    }
+    if (this.ctx) this.show(this.ctx);
   }
 
   /**
    * Render the widget content
    */
   private renderWidget(width: number, theme: any): string[] {
-    const jobs = this.storage.getAllJobs();
-    
+    const jobs = this.loadedJobs();
+
     // Deduplicate jobs by ID (safeguard against rendering issues)
     const uniqueJobs = Array.from(
       new Map(jobs.map(job => [job.id, job])).values()
@@ -242,17 +151,17 @@ export class CronWidget {
       const namePadded = nameRaw.padEnd(15);
       const nameText = job.enabled ? theme.fg("text", namePadded) : theme.fg("muted", namePadded);
 
-      // Schedule (max 15 chars for column, pad before coloring)
+      // Schedule (max 15 chars for column, pad before coloring). The helpers
+      // return full strings; we truncate at the column boundary here.
       let scheduleRaw: string;
       if (job.type === "cron") {
         scheduleRaw = humanizeCron(job.schedule);
       } else if (job.type === "once" && job.schedule.includes("T")) {
-        // Format ISO timestamps
         scheduleRaw = formatISOShort(job.schedule);
       } else {
-        // For intervals and relative times, show as-is
-        scheduleRaw = job.schedule.length > 15 ? job.schedule.substring(0, 12) + "..." : job.schedule;
+        scheduleRaw = job.schedule;
       }
+      if (scheduleRaw.length > 15) scheduleRaw = `${scheduleRaw.substring(0, 12)}...`;
       const schedulePadded = scheduleRaw.padEnd(15);
       const scheduleText = theme.fg("dim", schedulePadded);
 
@@ -298,6 +207,7 @@ export class CronWidget {
    * Cleanup
    */
   destroy(): void {
+    this.unsubscribe();
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }

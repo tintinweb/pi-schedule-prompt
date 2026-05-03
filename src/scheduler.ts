@@ -2,7 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Cron } from "croner";
 import type { CronStorage } from "./storage.js";
 import { runSubagentOnce, type SubagentResult } from "./subagent.js";
-import type { CronChangeEvent, CronJob } from "./types.js";
+import type { CronChangeEvent, CronJob, CronJobType } from "./types.js";
+
+/** Result of `CronScheduler.validateSchedule`. On success, `schedule` is the
+ *  resolved form to persist (ISO for `once`, original for `cron`/`interval`). */
+type ValidateScheduleResult =
+  | { ok: true; schedule: string; intervalMs?: number }
+  | { ok: false; error: string };
 
 const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
 
@@ -31,18 +37,17 @@ export class CronScheduler {
   }
 
   /**
-   * Start the scheduler with all enabled jobs.
+   * Schedule all enabled jobs loaded for this session — see `isLoadedFor`.
+   * Foreign-session jobs are skipped so two pis in the same cwd don't double-fire.
    *
-   * Also clears any stale `lastStatus: "running"` from a prior session that was
-   * killed mid-execution (subagent aborted by shutdown, process kill, etc.). The
-   * field is informational — it tracks the *last completed* run — and would
-   * otherwise stick the widget on `⟳` until the cron next fires. We don't
-   * pretend the interrupted run "succeeded": we just drop the stale flag so the
-   * row reads as ready-to-run instead of stuck.
+   * Also clears stale `lastStatus: "running"` from an interrupted prior run of
+   * *this* session (process kill, abort) — otherwise the widget sticks on `⟳`
+   * until the cron next fires. Other sessions' flags are theirs to manage.
    */
   start(): void {
-    const allJobs = this.storage.getAllJobs();
-    for (const job of allJobs) {
+    const mySessionId = this.ctx.sessionManager.getSessionId();
+    for (const job of this.storage.getAllJobs()) {
+      if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
       if (job.lastStatus === "running") {
         this.storage.updateJob(job.id, { lastStatus: undefined });
       }
@@ -50,6 +55,11 @@ export class CronScheduler {
         this.scheduleJob(job);
       }
     }
+  }
+
+  /** Unbound jobs (no `session` field) load for everyone. */
+  static isLoadedFor(job: CronJob, sessionId: string | undefined): boolean {
+    return !job.session || job.session === sessionId;
   }
 
   /**
@@ -194,6 +204,12 @@ export class CronScheduler {
    * Execute a job's prompt
    */
   private async executeJob(job: CronJob): Promise<void> {
+    // Re-read before firing — closure-captured `job` is stale if storage was
+    // edited mid-tick (removed, disabled, or `session` rebound by hand-edit).
+    const fresh = this.storage.getJob(job.id);
+    if (!fresh?.enabled) return;
+    if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
+
     console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
 
     if (job.model) {
@@ -463,4 +479,126 @@ export class CronScheduler {
 
     return value * multipliers[unit];
   }
+
+  /**
+   * Validate and resolve a schedule string for the given type.
+   * Single source of truth shared by tool `add`/`update` and the UI command.
+   *
+   * - `cron`: validates the 6-field expression
+   * - `once`: accepts ISO timestamps and relative time (`+10s`); rejects past
+   *   timestamps and ones <5s away (the agent should use relative time instead)
+   * - `interval`: accepts duration strings (`5m`, `1h`, `30s`)
+   */
+  static validateSchedule(type: CronJobType, schedule: string): ValidateScheduleResult {
+    if (type === "interval") {
+      const intervalMs = CronScheduler.parseInterval(schedule);
+      if (!intervalMs) {
+        return {
+          ok: false,
+          error: `Invalid interval format: ${schedule}. Use format like '5m', '1h', '30s'`,
+        };
+      }
+      return { ok: true, schedule, intervalMs };
+    }
+
+    if (type === "once") {
+      const relative = CronScheduler.parseRelativeTime(schedule);
+      if (relative) return { ok: true, schedule: relative };
+
+      const date = new Date(schedule);
+      if (Number.isNaN(date.getTime())) {
+        return {
+          ok: false,
+          error: `Invalid timestamp: ${schedule}. Use ISO format or relative time like '+10s', '+5m'`,
+        };
+      }
+      const delay = date.getTime() - Date.now();
+      if (delay < 0) {
+        return {
+          ok: false,
+          error: `Timestamp is in the past: ${date.toISOString()}. Current time: ${new Date().toISOString()}`,
+        };
+      }
+      if (delay < 5000) {
+        return {
+          ok: false,
+          error: `Timestamp is too soon (${Math.round(delay / 1000)}s). For delays under 5s, use relative time like '+${Math.ceil(delay / 1000)}s' instead, or schedule at least 5s in the future.`,
+        };
+      }
+      return { ok: true, schedule: date.toISOString() };
+    }
+
+    // cron
+    const validation = CronScheduler.validateCronExpression(schedule);
+    if (!validation.valid) {
+      return { ok: false, error: `Invalid cron expression: ${validation.error}` };
+    }
+    return { ok: true, schedule };
+  }
+
+  /**
+   * Render a resolved schedule as a short human-readable phrase.
+   * Used for confirm dialogs and the widget. `schedule` is the resolved form
+   * returned by `validateSchedule` (ISO for `once`).
+   */
+  static describeSchedule(type: CronJobType, schedule: string): string {
+    if (type === "interval") return `every ${schedule}`;
+    if (type === "once") {
+      const date = new Date(schedule);
+      return Number.isNaN(date.getTime()) ? schedule : formatISOShort(date);
+    }
+    return humanizeCron(schedule);
+  }
+}
+
+const HUMANIZED_CRON: Record<string, string> = {
+  "* * * * * *": "every second",
+  "0 * * * * *": "every minute",
+  "0 */5 * * * *": "every 5 min",
+  "0 */10 * * * *": "every 10 min",
+  "0 */15 * * * *": "every 15 min",
+  "0 */30 * * * *": "every 30 min",
+  "0 0 * * * *": "every hour",
+  "0 0 */2 * * *": "every 2 hours",
+  "0 0 */3 * * *": "every 3 hours",
+  "0 0 */6 * * *": "every 6 hours",
+  "0 0 0 * * *": "daily",
+  "0 0 0 * * 0": "weekly",
+  "0 0 0 1 * *": "monthly",
+  "0 0 9 * * 1-5": "9am weekdays",
+  "0 0 0 * * 1-5": "weekdays",
+  "0 0 0 * * 0,6": "weekends",
+};
+
+/** Human-readable form of a 6-field cron expression for common patterns.
+ *  Falls back to the raw expression for anything not recognized — never
+ *  guesses a wrong description. Callers truncate for column-width displays. */
+export function humanizeCron(expression: string): string {
+  const normalized = expression.trim();
+  if (HUMANIZED_CRON[normalized]) return HUMANIZED_CRON[normalized];
+
+  const minMatch = normalized.match(/^0 \*\/(\d+) \* \* \* \*$/);
+  if (minMatch) return `every ${minMatch[1]} min`;
+
+  const hourMatch = normalized.match(/^0 0 \*\/(\d+) \* \* \*$/);
+  if (hourMatch) return `every ${hourMatch[1]}h`;
+
+  const timeMatch = normalized.match(/^0 0 (\d+) \* \* \*$/);
+  if (timeMatch) return `daily at ${parseInt(timeMatch[1], 10)}:00`;
+
+  return normalized;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Compact ISO timestamp render: "Feb 13 15:30". Returns the input unchanged
+ *  if it doesn't parse as a date. */
+export function formatISOShort(input: Date | string): string {
+  const date = typeof input === "string" ? new Date(input) : input;
+  if (Number.isNaN(date.getTime())) return String(input);
+  const month = MONTHS[date.getMonth()];
+  const day = date.getDate();
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  return `${month} ${day} ${hours}:${minutes}`;
 }

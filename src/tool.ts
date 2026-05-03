@@ -2,16 +2,19 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
+import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
 import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
 import { CronToolParams } from "./types.js";
 
 /**
- * Create the schedule_prompt tool definition
+ * Create the schedule_prompt tool definition.
+ * `getDefaultScope` is a getter so live setting toggles affect the next `add`.
  */
 export function createCronTool(
   getStorage: () => CronStorage,
-  getScheduler: () => CronScheduler
+  getScheduler: () => CronScheduler,
+  getDefaultScope: () => JobScope = () => "session",
 ): ToolDefinition<typeof CronToolParams, CronToolDetails> {
   return {
     name: "schedule_prompt",
@@ -76,56 +79,14 @@ export function createCronTool(
             }
 
             const type = (params.type || "cron") as CronJobType;
-            let intervalMs: number | undefined;
-            let schedule = params.schedule;
-
-            // Parse and validate based on type
-            if (type === "interval") {
-              const parsed = CronScheduler.parseInterval(params.schedule);
-              intervalMs = parsed !== null ? parsed : undefined;
-              if (!intervalMs) {
-                throw new Error(
-                  `Invalid interval format: ${params.schedule}. Use format like '5m', '1h', '30s'`
-                );
-              }
-            } else if (type === "once") {
-              // Check for relative time first (e.g., "+10s", "+5m")
-              const relativeTime = CronScheduler.parseRelativeTime(params.schedule);
-              if (relativeTime) {
-                schedule = relativeTime;
-              } else {
-                // Try parsing as ISO timestamp
-                const date = new Date(params.schedule);
-                if (Number.isNaN(date.getTime())) {
-                  throw new Error(
-                    `Invalid timestamp: ${params.schedule}. Use ISO format or relative time like '+10s', '+5m'`
-                  );
-                }
-                schedule = date.toISOString();
-                
-                // Warn if scheduled in the past or very near future
-                const now = Date.now();
-                const delay = date.getTime() - now;
-                if (delay < 0) {
-                  throw new Error(
-                    `Timestamp is in the past: ${schedule}. Current time: ${new Date().toISOString()}`
-                  );
-                } else if (delay < 5000) {
-                  // Less than 5 seconds warning
-                  throw new Error(
-                    `Timestamp is too soon (${Math.round(delay / 1000)}s). For delays under 5s, use relative time like '+${Math.ceil(delay / 1000)}s' instead, or schedule at least 5s in the future.`
-                  );
-                }
-              }
-            } else {
-              // Validate cron expression
-              const validation = CronScheduler.validateCronExpression(params.schedule);
-              if (!validation.valid) {
-                throw new Error(`Invalid cron expression: ${validation.error}`);
-              }
-            }
+            const validated = CronScheduler.validateSchedule(type, params.schedule);
+            if (!validated.ok) throw new Error(validated.error);
+            const schedule = validated.schedule;
+            const intervalMs = validated.intervalMs;
 
             const now = new Date().toISOString();
+            const session =
+              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -139,6 +100,7 @@ export function createCronTool(
               description: params.description,
               model: params.model,
               notify: params.notify,
+              session,
             };
 
             storage.addJob(job);
@@ -222,10 +184,13 @@ export function createCronTool(
           }
 
           case "cleanup": {
-            // Remove all disabled jobs
-            const allJobs = storage.getAllJobs();
-            const disabledJobs = allJobs.filter((j) => !j.enabled);
-            
+            // Only touch jobs this session can see — foreign-session jobs are
+            // owned by other pis. Unbound disabled jobs are fair game.
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const disabledJobs = storage
+              .getAllJobs()
+              .filter((j) => !j.enabled && CronScheduler.isLoadedFor(j, mySessionId));
+
             if (disabledJobs.length === 0) {
               details.jobs = [];
               return {
@@ -284,51 +249,12 @@ export function createCronTool(
             if (params.notify !== undefined) updates.notify = params.notify;
 
             if (params.schedule) {
-              // Validate the new schedule using the same resolution rules as
-              // `add`: relative time (`+5m`) → ISO, ISO accepted as-is, cron
-              // validated by croner. Without this, `update {schedule: "+5m"}`
-              // failed with "Invalid timestamp: +5m" because `add` resolved
-              // relative times pre-save but `update` didn't.
-              const type = job.type;
-              if (type === "interval") {
-                const parsed = CronScheduler.parseInterval(params.schedule);
-                const intervalMs = parsed !== null ? parsed : undefined;
-                if (!intervalMs) {
-                  throw new Error(`Invalid interval format: ${params.schedule}`);
-                }
-                updates.schedule = params.schedule;
-                updates.intervalMs = intervalMs;
-              } else if (type === "once") {
-                const relativeTime = CronScheduler.parseRelativeTime(params.schedule);
-                if (relativeTime) {
-                  updates.schedule = relativeTime;
-                } else {
-                  const date = new Date(params.schedule);
-                  if (Number.isNaN(date.getTime())) {
-                    throw new Error(
-                      `Invalid timestamp: ${params.schedule}. Use ISO format or relative time like '+10s', '+5m'`
-                    );
-                  }
-                  const delay = date.getTime() - Date.now();
-                  if (delay < 0) {
-                    throw new Error(
-                      `Timestamp is in the past: ${date.toISOString()}. Current time: ${new Date().toISOString()}`
-                    );
-                  }
-                  if (delay < 5000) {
-                    throw new Error(
-                      `Timestamp is too soon (${Math.round(delay / 1000)}s). For delays under 5s, use relative time like '+${Math.ceil(delay / 1000)}s' instead, or schedule at least 5s in the future.`
-                    );
-                  }
-                  updates.schedule = date.toISOString();
-                }
-              } else {
-                const validation = CronScheduler.validateCronExpression(params.schedule);
-                if (!validation.valid) {
-                  throw new Error(`Invalid cron expression: ${validation.error}`);
-                }
-                updates.schedule = params.schedule;
-              }
+              // Same resolution rules as `add`: relative time (`+5m`) → ISO,
+              // ISO accepted as-is, cron validated by croner.
+              const validated = CronScheduler.validateSchedule(job.type, params.schedule);
+              if (!validated.ok) throw new Error(validated.error);
+              updates.schedule = validated.schedule;
+              if (validated.intervalMs !== undefined) updates.intervalMs = validated.intervalMs;
             }
 
             storage.updateJob(params.jobId, updates);
@@ -351,7 +277,10 @@ export function createCronTool(
           }
 
           case "list": {
-            const jobs = storage.getAllJobs();
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const jobs = storage
+              .getAllJobs()
+              .filter((j) => CronScheduler.isLoadedFor(j, mySessionId));
             details.jobs = jobs;
 
             if (jobs.length === 0) {

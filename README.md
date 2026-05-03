@@ -53,7 +53,7 @@ Get prompted to do something once at a specific time:
 - ✓ **Human-readable display**: "every minute", "daily at 9:00" instead of raw cron expressions
 - ✓ **Status tracking**: next run, last run, execution count, errors, prompt preview
 - ✓ **Flexible scheduling**: 6-field cron, intervals (5m, 1h), relative time (+10s), ISO timestamps
-- ✓ **User commands**: `/schedule-prompt` interactive menu with a `Settings` submenu (current state visible in the row label)
+- ✓ **User commands**: `/schedule-prompt` opens a `Jobs` overlay (hotkey-driven: `↑↓` select, `a` add, `t` toggle enabled, `s` toggle scope, `x` remove, `c` cleanup) and a `Settings` submenu
 - ✓ **Persistent settings**: widget visibility persists across sessions and package upgrades (project file overrides global defaults)
 - ✓ **Safety features**: duplicate name prevention, infinite loop detection, past timestamp handling
 
@@ -100,9 +100,10 @@ The widget displays below your editor (only when jobs exist):
 
 ### Manual commands
 
-| Command | Description |
-|---------|-------------|
-| `/schedule-prompt` | Interactive menu: view/add/toggle/remove jobs, cleanup, and `Settings` submenu (widget visibility, etc.) |
+`/schedule-prompt` opens a two-item menu:
+
+- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this cwd), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
+- **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
 
@@ -153,6 +154,14 @@ The tool accepts multiple time formats:
 **Storage:**
 - Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
 - Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
+
+**Job binding:**
+
+By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi in this cwd (useful for hand-edited project-wide cron), remove its `session` field from `<cwd>/.pi/schedule-prompts.json`.
+
+Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
+
+**Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 
 **Scheduler:**
 - Uses `croner` library for cron expressions

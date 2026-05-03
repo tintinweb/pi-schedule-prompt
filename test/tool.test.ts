@@ -33,17 +33,28 @@ function makeScheduler() {
   } as any;
 }
 
-// Tool's recursion guard reads ctx.sessionManager.getEntries(); empty array bypasses it.
-function makeCtx() {
-  return { sessionManager: { getEntries: () => [] } } as any;
+// Tool reads ctx.sessionManager.getEntries() (recursion guard) and
+// .getSessionId() (session binding on add). Empty entries bypass the guard;
+// a stable mock id lets tests assert what gets persisted.
+function makeCtx(sessionId = "test-session") {
+  return {
+    sessionManager: {
+      getEntries: () => [],
+      getSessionId: () => sessionId,
+    },
+  } as any;
 }
 
-function buildTool(seedJobs: CronJob[] = []) {
+function buildTool(
+  seedJobs: CronJob[] = [],
+  getDefaultScope: () => "session" | "workdir" = () => "session",
+) {
   const storage = makeStorage(seedJobs);
   const scheduler = makeScheduler();
   const tool = createCronTool(
     () => storage,
     () => scheduler,
+    getDefaultScope,
   );
   return { tool, storage };
 }
@@ -253,5 +264,73 @@ describe("schedule_prompt — update resolves relative time on schedule (T17)", 
     );
     // For cron type the schedule must be a valid cron expression — `+5m` isn't.
     expect(result.details?.error).toBeDefined();
+  });
+});
+
+describe("schedule_prompt — session binding", () => {
+  it("add with default scope ('session') stamps session = current sessionId", async () => {
+    const { tool, storage } = buildTool([], () => "session");
+    const result = await tool.execute(
+      "call",
+      { action: "add", schedule: "+10s", type: "once", prompt: "hi" } as any,
+      undefined,
+      undefined,
+      makeCtx("session-A"),
+    );
+    expect(result.details?.error).toBeUndefined();
+    const id = result.details?.jobs?.[0].id as string;
+    expect(storage.getJob(id).session).toBe("session-A");
+  });
+
+  it("add with scope='workdir' omits the session field", async () => {
+    const { tool, storage } = buildTool([], () => "workdir");
+    const result = await tool.execute(
+      "call",
+      { action: "add", schedule: "+10s", type: "once", prompt: "hi" } as any,
+      undefined,
+      undefined,
+      makeCtx("session-A"),
+    );
+    expect(result.details?.error).toBeUndefined();
+    const id = result.details?.jobs?.[0].id as string;
+    // Persisted job has no session — every pi will load it.
+    expect(storage.getJob(id).session).toBeUndefined();
+  });
+
+  it("list filters out foreign-session jobs but keeps unbound jobs", async () => {
+    const mine = exampleJob({ id: "mine", name: "mine", session: "session-A" });
+    const foreign = exampleJob({ id: "foreign", name: "foreign", session: "session-B" });
+    const unbound = exampleJob({ id: "unbound", name: "unbound" }); // no session
+    const { tool } = buildTool([mine, foreign, unbound]);
+    const result = await tool.execute(
+      "call",
+      { action: "list" } as any,
+      undefined,
+      undefined,
+      makeCtx("session-A"),
+    );
+    const ids = (result.details?.jobs ?? []).map((j) => j.id).sort();
+    expect(ids).toEqual(["mine", "unbound"]);
+  });
+
+  it("cleanup removes only this session's disabled jobs (foreign disabled jobs preserved)", async () => {
+    const mine = exampleJob({ id: "mine", name: "mine", enabled: false, session: "session-A" });
+    const foreign = exampleJob({ id: "foreign", name: "foreign", enabled: false, session: "session-B" });
+    const unbound = exampleJob({ id: "unbound", name: "unbound", enabled: false }); // no session
+    const stillEnabled = exampleJob({ id: "live", name: "live", enabled: true, session: "session-A" });
+    const { tool, storage } = buildTool([mine, foreign, unbound, stillEnabled]);
+    const result = await tool.execute(
+      "call",
+      { action: "cleanup" } as any,
+      undefined,
+      undefined,
+      makeCtx("session-A"),
+    );
+    expect(result.details?.error).toBeUndefined();
+    // Mine + unbound disabled were removed; foreign disabled was left for its owner.
+    expect(storage.getJob("mine")).toBeUndefined();
+    expect(storage.getJob("unbound")).toBeUndefined();
+    expect(storage.getJob("foreign")).toBeDefined();
+    expect(storage.getJob("live")).toBeDefined();
   });
 });

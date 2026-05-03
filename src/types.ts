@@ -46,6 +46,8 @@ export interface CronJob {
   model?: string;
   /** Subagent jobs only. If true, the parent agent is woken up to react to the subagent's result. Default false (result lands in chat silently). */
   notify?: boolean;
+  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
+  session?: string;
 }
 
 /**

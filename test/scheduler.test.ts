@@ -41,8 +41,12 @@ function makePi() {
   } as any;
 }
 
-function makeCtx() {
-  return { cwd: "/tmp", modelRegistry: { find: () => undefined, getAvailable: () => [] } } as any;
+function makeCtx(sessionId = "test-session") {
+  return {
+    cwd: "/tmp",
+    modelRegistry: { find: () => undefined, getAvailable: () => [] },
+    sessionManager: { getSessionId: () => sessionId },
+  } as any;
 }
 
 function exampleJob(overrides: Partial<CronJob> = {}): CronJob {
@@ -385,5 +389,185 @@ describe("CronScheduler — inline path is unaffected by mock", () => {
       prompt: job.prompt,
     });
     expect(markerOpts).toBeUndefined();
+  });
+});
+
+describe("CronScheduler — session binding filter", () => {
+  it("isLoadedFor: unbound job is loaded for any session", () => {
+    expect(CronScheduler.isLoadedFor(exampleJob(), "any")).toBe(true);
+    expect(CronScheduler.isLoadedFor(exampleJob(), undefined)).toBe(true);
+  });
+
+  it("isLoadedFor: bound job loads only for the matching session", () => {
+    const j = exampleJob({ session: "A" });
+    expect(CronScheduler.isLoadedFor(j, "A")).toBe(true);
+    expect(CronScheduler.isLoadedFor(j, "B")).toBe(false);
+    expect(CronScheduler.isLoadedFor(j, undefined)).toBe(false);
+  });
+
+  it("start() does not schedule foreign-session jobs", () => {
+    const pi = makePi();
+    const cronSchedule = "0 0 * * * *"; // hourly
+    // Mark the foreign job lastStatus=running to also assert the stale-running
+    // sweep skips it (we don't touch other sessions' state).
+    const mine = exampleJob({
+      id: "mine", type: "cron", schedule: cronSchedule, session: "session-A",
+    });
+    const foreign = exampleJob({
+      id: "foreign", type: "cron", schedule: cronSchedule,
+      session: "session-B", lastStatus: "running",
+    });
+    const unbound = exampleJob({
+      id: "unbound", type: "cron", schedule: cronSchedule,
+    });
+    const storage = makeStorage([mine, foreign, unbound]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    try {
+      scheduler.start();
+      const jobsMap = (scheduler as any).jobs as Map<string, unknown>;
+      expect(jobsMap.has("mine")).toBe(true);
+      expect(jobsMap.has("unbound")).toBe(true);
+      expect(jobsMap.has("foreign")).toBe(false);
+      // Foreign session's stale-running flag is untouched — it's not ours.
+      expect(storage.getJob("foreign").lastStatus).toBe("running");
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it("executeJob bails when storage now reports the job is bound to another session", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", session: "session-A" });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-B"));
+
+    await (scheduler as any).executeJob(job);
+
+    // No marker, no user message — the defensive re-read caught the mismatch
+    // before the scheduler dispatched.
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails when the job has been removed mid-tick", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j" });
+    const storage = makeStorage([]); // job not in storage anymore
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    await (scheduler as any).executeJob(job);
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails when the job was disabled mid-tick (e.g. hand-edited file)", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", enabled: false });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    await (scheduler as any).executeJob(job);
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails before delegating to subagent when session no longer matches", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", model: "haiku", session: "session-A" });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-B"));
+
+    await (scheduler as any).executeJob(job);
+
+    // Guard fires before the model branch — subagent never runs, no markers.
+    expect(mockRunSubagentOnce).not.toHaveBeenCalled();
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("CronScheduler.validateSchedule", () => {
+  it("interval: accepts valid duration, returns intervalMs", () => {
+    const r = CronScheduler.validateSchedule("interval", "5m");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.schedule).toBe("5m");
+      expect(r.intervalMs).toBe(5 * 60 * 1000);
+    }
+  });
+
+  it("interval: rejects garbage with a useful hint", () => {
+    const r = CronScheduler.validateSchedule("interval", "five minutes");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("'5m', '1h', '30s'");
+  });
+
+  it("once: accepts relative time and resolves to ISO", () => {
+    const r = CronScheduler.validateSchedule("once", "+5m");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const t = new Date(r.schedule).getTime();
+      expect(t - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+      expect(t - Date.now()).toBeLessThan(6 * 60 * 1000);
+    }
+  });
+
+  it("once: rejects past timestamps", () => {
+    const r = CronScheduler.validateSchedule("once", "2000-01-01T00:00:00Z");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("in the past");
+  });
+
+  it("once: rejects timestamps under 5s away with a relative-time suggestion", () => {
+    const soon = new Date(Date.now() + 2000).toISOString();
+    const r = CronScheduler.validateSchedule("once", soon);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("too soon");
+      expect(r.error).toMatch(/use relative time like '\+\d+s'/);
+    }
+  });
+
+  it("once: rejects unparseable timestamps", () => {
+    const r = CronScheduler.validateSchedule("once", "not-a-date");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Invalid timestamp");
+  });
+
+  it("cron: accepts valid 6-field expression", () => {
+    const r = CronScheduler.validateSchedule("cron", "0 0 9 * * *");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.schedule).toBe("0 0 9 * * *");
+  });
+
+  it("cron: rejects 5-field expression with field-count error", () => {
+    const r = CronScheduler.validateSchedule("cron", "0 9 * * *");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("6 fields");
+  });
+});
+
+describe("CronScheduler.describeSchedule", () => {
+  it("cron: humanizes known patterns", () => {
+    expect(CronScheduler.describeSchedule("cron", "0 0 0 * * *")).toBe("daily");
+    expect(CronScheduler.describeSchedule("cron", "0 */5 * * * *")).toBe("every 5 min");
+  });
+
+  it("cron: returns raw expression untouched for unknown patterns (no guessing)", () => {
+    const raw = "15 30 8 1,15 * 1-5";
+    expect(CronScheduler.describeSchedule("cron", raw)).toBe(raw);
+  });
+
+  it("interval: prefixes with 'every'", () => {
+    expect(CronScheduler.describeSchedule("interval", "5m")).toBe("every 5m");
+  });
+
+  it("once: renders ISO as 'Mon DD HH:MM'", () => {
+    const iso = "2026-02-13T15:30:00.000Z";
+    const out = CronScheduler.describeSchedule("once", iso);
+    // Format depends on local TZ for the day/hour fields, so just assert shape.
+    expect(out).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
   });
 });
