@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { CronWidget } from "../src/ui/cron-widget.js";
-import type { CronStorage } from "../src/storage.js";
-import type { CronScheduler } from "../src/scheduler.js";
-import type { CronJob } from "../src/types.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import type { CronScheduler } from "../src/scheduler.js";
+import type { CronStorage } from "../src/storage.js";
+import type { CronJob } from "../src/types.js";
+import { CronWidget } from "../src/ui/cron-widget.js";
 
 function makeStorage(jobs: CronJob[]): CronStorage {
   return {
@@ -15,7 +15,7 @@ function makeStorage(jobs: CronJob[]): CronStorage {
   } as any;
 }
 
-function makeScheduler(jobs: CronJob[]): CronScheduler {
+function makeScheduler(_jobs: CronJob[]): CronScheduler {
   return {
     getNextRun: vi.fn(() => null),
     isLoadedFor: vi.fn(() => true),

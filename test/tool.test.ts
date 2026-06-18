@@ -338,7 +338,7 @@ describe("schedule_prompt — session binding", () => {
 describe("schedule_prompt — allowExtensions", () => {
   describe("add", () => {
     it("accepts allowExtensions=true and stores it on the job", async () => {
-      const { tool, storage } = buildTool();
+      const { tool } = buildTool();
       const result = await tool.execute(
         "call",
         {
