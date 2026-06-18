@@ -100,6 +100,7 @@ export function createCronTool(
               description: params.description,
               model: params.model,
               notify: params.notify,
+              allowExtensions: params.allowExtensions,
               session,
             };
 
@@ -110,7 +111,7 @@ export function createCronTool(
             details.jobName = job.name;
 
             const modelLine = job.model
-              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""})`
+              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.allowExtensions ? ", extensions + skills" : ""})` 
               : "";
             return {
               content: [
@@ -247,6 +248,7 @@ export function createCronTool(
             if (params.description !== undefined) updates.description = params.description;
             if (params.model !== undefined) updates.model = params.model;
             if (params.notify !== undefined) updates.notify = params.notify;
+            if (params.allowExtensions !== undefined) updates.allowExtensions = params.allowExtensions;
 
             if (params.schedule) {
               // Same resolution rules as `add`: relative time (`+5m`) → ISO,
@@ -394,7 +396,8 @@ export function createCronTool(
           );
           if (job.model) {
             const subagentTag = job.notify ? "(subagent, notifies parent)" : "(subagent)";
-            lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}`);
+            const extTag = job.allowExtensions ? ", extensions + skills" : "";
+            lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}${extTag}`);
           }
           lines.push(`  ${theme.fg("dim", "Prompt:")} ${job.prompt}`);
           if (job.lastRun) {

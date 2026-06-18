@@ -334,3 +334,76 @@ describe("schedule_prompt — session binding", () => {
     expect(storage.getJob("live")).toBeDefined();
   });
 });
+
+describe("schedule_prompt — allowExtensions", () => {
+  describe("add", () => {
+    it("accepts allowExtensions=true and stores it on the job", async () => {
+      const { tool, storage } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+          allowExtensions: true,
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].allowExtensions).toBe(true);
+    });
+
+    it("defaults allowExtensions to undefined when not provided", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].allowExtensions).toBeUndefined();
+    });
+  });
+
+  describe("update", () => {
+    it("accepts setting allowExtensions=true on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([exampleJob({ id: "j1", model: "haiku" })]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j1", allowExtensions: true } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j1").allowExtensions).toBe(true);
+    });
+
+    it("accepts setting allowExtensions=false on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([
+        exampleJob({ id: "j1", model: "haiku", allowExtensions: true }),
+      ]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j1", allowExtensions: false } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j1").allowExtensions).toBe(false);
+    });
+  });
+});

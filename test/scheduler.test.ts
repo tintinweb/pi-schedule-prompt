@@ -571,3 +571,48 @@ describe("CronScheduler.describeSchedule", () => {
     expect(out).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
   });
 });
+
+describe("CronScheduler — allowExtensions", () => {
+  beforeEach(() => {
+    mockRunSubagentOnce.mockReset();
+  });
+
+  it("passes allowExtensions=true to runSubagentOnce when job has allowExtensions=true", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", allowExtensions: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const options = mockRunSubagentOnce.mock.calls[0][4];
+    expect(options).toEqual({ allowExtensions: true });
+  });
+
+  it("passes allowExtensions=false to runSubagentOnce when job has no allowExtensions", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku" }); // no allowExtensions
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const options = mockRunSubagentOnce.mock.calls[0][4];
+    expect(options).toEqual({ allowExtensions: false });
+  });
+
+  it("passes allowExtensions=false to runSubagentOnce when job has allowExtensions=false", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", allowExtensions: false });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const options = mockRunSubagentOnce.mock.calls[0][4];
+    expect(options).toEqual({ allowExtensions: false });
+  });
+});

@@ -24,6 +24,11 @@ export type SubagentResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
 
+export interface RunSubagentOptions {
+  /** If true, load extensions and skills in the subagent. Default false. */
+  allowExtensions?: boolean;
+}
+
 export function resolveModel(
   registry: ExtensionContext["modelRegistry"],
   modelStr: string,
@@ -85,6 +90,7 @@ export async function runSubagentOnce(
   prompt: string,
   modelStr: string,
   signal?: AbortSignal,
+  options: RunSubagentOptions = {},
 ): Promise<SubagentResult> {
   try {
     const model = resolveModel(ctx.modelRegistry, modelStr);
@@ -103,8 +109,10 @@ export async function runSubagentOnce(
       // recursively into the subagent and starting another scheduler.
       // Context files (AGENTS.md / CLAUDE.md) are loaded by the loader's defaults
       // so the subagent picks up project conventions.
-      noExtensions: true,
-      noSkills: true,
+      // When allowExtensions is true, extensions and skills are loaded so the
+      // subagent has access to Telegram, MCP tools, skill files, etc.
+      noExtensions: !options.allowExtensions,
+      noSkills: !options.allowExtensions,
       noPromptTemplates: true,
       noThemes: true,
     });
@@ -117,10 +125,13 @@ export async function runSubagentOnce(
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
-      tools: DEFAULT_TOOL_NAMES,
+      tools: options.allowExtensions ? undefined : DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
+    if (options.allowExtensions) {
+      await session.bindExtensions({});
+    }
     let onAbort: (() => void) | undefined;
     if (signal) {
       if (signal.aborted) {

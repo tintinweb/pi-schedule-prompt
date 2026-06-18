@@ -1,9 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   describeAvailableModels,
   getLastAssistantText,
   resolveModel,
 } from "../src/subagent.js";
+import {
+  runSubagentOnce,
+} from "../src/subagent.js";
+
+// Mock the pi-coding-agent module for runSubagentOnce tests
+// Must be at file scope — vitest hoists vi.mock to the top automatically.
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  createAgentSession: vi.fn(),
+  DefaultResourceLoader: vi.fn(function () {
+    return { reload: vi.fn().mockResolvedValue(undefined) };
+  }),
+  getAgentDir: vi.fn(() => "/tmp/agent-dir"),
+  SessionManager: { inMemory: vi.fn(() => ({ getSessionId: () => "test" })) },
+  SettingsManager: { create: vi.fn(() => ({})) },
+}));
+
+import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+
+const mockCreateAgentSession = vi.mocked(createAgentSession);
+const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader);
 
 // Mirror of the minimal Model shape resolveModel actually touches: provider, id, name.
 const MODELS = [
@@ -172,5 +192,79 @@ describe("getLastAssistantText", () => {
         ]),
       ),
     ).toBe("real text");
+  });
+});
+
+describe("runSubagentOnce", () => {
+  beforeEach(() => {
+    mockCreateAgentSession.mockReset();
+    mockDefaultResourceLoader.mockReset();
+  });
+
+  function makeFakeSession() {
+    return {
+      abort: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      messages: [],
+      bindExtensions: vi.fn(),
+    };
+  }
+
+  function makeCtx() {
+    return {
+      cwd: "/tmp",
+      modelRegistry: {
+        find: () => MODELS[0],
+        getAvailable: () => MODELS,
+      },
+      sessionManager: {
+        getSessionId: () => "test",
+      },
+    } as any;
+  }
+
+  it("default: creates subagent with noExtensions=true, noSkills=true, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: true
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.noSkills).toBe(true);
+
+    // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+
+    // bindExtensions should NOT have been called
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("allowExtensions:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      allowExtensions: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: false
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(loaderOptions.noSkills).toBe(false);
+
+    // Check createAgentSession was called with tools: undefined
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    // bindExtensions should have been called
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
   });
 });
