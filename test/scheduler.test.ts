@@ -587,7 +587,7 @@ describe("CronScheduler — extensions/skills", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ extensions: true, skills: false });
+    expect(options).toEqual({ extensions: true, skills: undefined });
   });
 
   it("passes extensions=false to runSubagentOnce when job has no extensions", async () => {
@@ -600,7 +600,7 @@ describe("CronScheduler — extensions/skills", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ extensions: false, skills: false });
+    expect(options).toEqual({ extensions: undefined, skills: undefined });
   });
 
   it("passes extensions=false to runSubagentOnce when job has extensions=false", async () => {
@@ -613,6 +613,6 @@ describe("CronScheduler — extensions/skills", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ extensions: false, skills: false });
+    expect(options).toEqual({ extensions: false, skills: undefined });
   });
 });
