@@ -245,12 +245,59 @@ describe("runSubagentOnce", () => {
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 
-  it("allowExtensions:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
+  it("allowExtensions:true: sets noExtensions=false, noSkills=true, tools=undefined, calls bindExtensions", async () => {
     const fakeSession = makeFakeSession();
     mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
 
     const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
       allowExtensions: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: true
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(loaderOptions.noSkills).toBe(true);
+
+    // Check createAgentSession was called with tools: undefined
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    // bindExtensions should have been called
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("allowSkills:true: sets noExtensions=true, noSkills=false, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      allowSkills: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: false
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.noSkills).toBe(false);
+
+    // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+
+    // bindExtensions should NOT have been called
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("allowExtensions:true + allowSkills:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      allowExtensions: true,
+      allowSkills: true,
     });
 
     expect(result.ok).toBe(true);

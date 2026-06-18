@@ -357,6 +357,26 @@ describe("schedule_prompt — allowExtensions", () => {
       expect(result.details?.jobs?.[0].allowExtensions).toBe(true);
     });
 
+    it("accepts allowSkills=true and stores it on the job", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+          allowSkills: true,
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].allowSkills).toBe(true);
+    });
+
     it("defaults allowExtensions to undefined when not provided", async () => {
       const { tool } = buildTool();
       const result = await tool.execute(
@@ -374,6 +394,25 @@ describe("schedule_prompt — allowExtensions", () => {
       );
       expect(result.details?.error).toBeUndefined();
       expect(result.details?.jobs?.[0].allowExtensions).toBeUndefined();
+    });
+
+    it("defaults allowSkills to undefined when not provided", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].allowSkills).toBeUndefined();
     });
   });
 
@@ -404,6 +443,34 @@ describe("schedule_prompt — allowExtensions", () => {
       );
       expect(result.details?.error).toBeUndefined();
       expect(storage.getJob("j1").allowExtensions).toBe(false);
+    });
+
+    it("accepts setting allowSkills=true on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([exampleJob({ id: "j2", model: "haiku" })]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j2", allowSkills: true } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j2").allowSkills).toBe(true);
+    });
+
+    it("accepts setting allowSkills=false on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([
+        exampleJob({ id: "j2", model: "haiku", allowSkills: true }),
+      ]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j2", allowSkills: false } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j2").allowSkills).toBe(false);
     });
   });
 });

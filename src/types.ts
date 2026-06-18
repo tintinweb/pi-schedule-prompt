@@ -44,10 +44,10 @@ export interface CronJob {
   model?: string;
   /** Subagent jobs only. If true, the parent agent is woken up to react to the subagent's result. Default false (result lands in chat silently). */
   notify?: boolean;
-  /** Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.) and skills, making all tools available. Default false. */
+  /** Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.). Default false. */
   allowExtensions?: boolean;
-  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
-  session?: string;
+  /** Subagent jobs only. If true, the subagent loads skills. Default false. */
+  allowSkills?: boolean;
 }
 
 /**
@@ -123,7 +123,13 @@ export const CronToolParams = Type.Object({
   allowExtensions: Type.Optional(
     Type.Boolean({
       description:
-        "Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.) and skills, making all tools available. Default false.",
+        "Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.). Default false.",
+    })
+  ),
+  allowSkills: Type.Optional(
+    Type.Boolean({
+      description:
+        "Subagent jobs only. If true, the subagent loads skills. Default false.",
     })
   ),
 });

@@ -587,7 +587,7 @@ describe("CronScheduler — allowExtensions", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: true });
+    expect(options).toEqual({ allowExtensions: true, allowSkills: false });
   });
 
   it("passes allowExtensions=false to runSubagentOnce when job has no allowExtensions", async () => {
@@ -600,7 +600,7 @@ describe("CronScheduler — allowExtensions", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: false });
+    expect(options).toEqual({ allowExtensions: false, allowSkills: false });
   });
 
   it("passes allowExtensions=false to runSubagentOnce when job has allowExtensions=false", async () => {
@@ -613,6 +613,6 @@ describe("CronScheduler — allowExtensions", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: false });
+    expect(options).toEqual({ allowExtensions: false, allowSkills: false });
   });
 });

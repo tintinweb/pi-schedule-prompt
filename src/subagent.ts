@@ -25,8 +25,10 @@ export type SubagentResult =
   | { ok: false; error: string };
 
 export interface RunSubagentOptions {
-  /** If true, load extensions and skills in the subagent. Default false. */
+  /** If true, load extensions in the subagent. Default false. */
   allowExtensions?: boolean;
+  /** If true, load skills in the subagent. Default false. */
+  allowSkills?: boolean;
 }
 
 export function resolveModel(
@@ -105,14 +107,12 @@ export async function runSubagentOnce(
     const loader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
-      // Critical: prevent this very extension (and any other) from re-loading
-      // recursively into the subagent and starting another scheduler.
-      // Context files (AGENTS.md / CLAUDE.md) are loaded by the loader's defaults
-      // so the subagent picks up project conventions.
-      // When allowExtensions is true, extensions and skills are loaded so the
-      // subagent has access to Telegram, MCP tools, skill files, etc.
+      // Prevent recursive loading of this extension into the subagent.
+      // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
+      // allowExtensions controls extensions (Telegram, MCP tools, etc.);
+      // allowSkills controls skill files. They are independent concerns.
       noExtensions: !options.allowExtensions,
-      noSkills: !options.allowExtensions,
+      noSkills: !options.allowSkills,
       noPromptTemplates: true,
       noThemes: true,
     });
