@@ -284,15 +284,13 @@ export class CronScheduler {
     this.storage.updateJob(job.id, { lastStatus: "running" });
     this.emitChange({ type: "fire", job });
 
-    // Start marker is purely visual. Empty `content` keeps it out of the
-    // parent's LLM context (the subagent has the prompt directly). No options
-    // means: idle → silent append + emit (immediately visible), streaming →
-    // `agent.steer` (inserts into the current turn's loop, no new turn). With
-    // empty content the steered message contributes nothing to the LLM, so
-    // neither path triggers a parent reply.
+    // Start marker needs non-empty content to prevent session poisoning.
+    // Pi-ai's openai-completions provider filters out user messages with
+    // empty content — if the marker lands right after an assistant message,
+    // the conversation ends on assistant and Anthropic 400s.
     this.pi.sendMessage({
       customType: "scheduled_prompt",
-      content: [],
+      content: [{ type: "text", text: `🕐 Scheduled (subagent: ${model}): ${job.name}` }],
       display: true,
       details: {
         jobId: job.id,
@@ -325,7 +323,7 @@ export class CronScheduler {
         // to post the marker. The marker is best-effort (pi may be invalidated
         // during teardown) and must never leave the job stuck in "running".
         if (result.ok) {
-          const outputSnippet = snippet(result.text);
+          const outputSnippet = snippet(result.text) || "(subagent produced no text output)";
           // Re-read runCount from storage; `job` here is the closure-captured
           // snapshot from scheduleJob and would yield a stale count.
           const latest = this.storage.getJob(job.id);
@@ -340,16 +338,14 @@ export class CronScheduler {
           try {
             // notify=true: snippet in `content` + followUp/triggerTurn wakes
             // the parent — it sees the result and reacts.
-            // notify=false: empty content + no options — renderer still draws
-            // the snippet from `details.output`, but the marker is silent
-            // (idle: append+emit, streaming: steer with empty content). The
-            // previous `{deliverAs: "followUp", triggerTurn: false}` was the
-            // bug: during a streaming parent response, the followUp branch
-            // ignores triggerTurn and still queues a new turn after the stream.
+            // notify=false: content is still non-empty (guarded by #10 fallback)
+            // to prevent session poisoning — pi-ai filters empty user messages,
+            // leaving the conversation ending on assistant which Anthropic 400s.
+            // No delivery options means the marker is silent (parent not woken).
             this.pi.sendMessage(
               {
                 customType: "scheduled_prompt",
-                content: notify ? [{ type: "text", text: outputSnippet }] : [],
+                content: [{ type: "text", text: outputSnippet }],
                 display: true,
                 details: {
                   jobId: job.id,
@@ -368,7 +364,7 @@ export class CronScheduler {
         } else {
           // Truncate the error the same way as the success snippet — verbose
           // API errors / stack traces would otherwise overflow the chat row.
-          const errorSnippet = snippet(result.error);
+          const errorSnippet = snippet(result.error) || "(subagent failed with empty error)";
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "error",
@@ -376,11 +372,11 @@ export class CronScheduler {
           });
           this.emitChange({ type: "error", jobId: job.id, error: errorSnippet });
           try {
-            // Same notify branching as the done marker — see comment above.
+            // Same notify-gated wake-up as the done marker — see comment above.
             this.pi.sendMessage(
               {
                 customType: "scheduled_prompt",
-                content: notify ? [{ type: "text", text: errorSnippet }] : [],
+                content: [{ type: "text", text: errorSnippet }],
                 display: true,
                 details: {
                   jobId: job.id,

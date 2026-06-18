@@ -68,7 +68,7 @@ describe("CronScheduler — subagent path marker delivery", () => {
     mockRunSubagentOnce.mockReset();
   });
 
-  it("posts a silent subagent_start marker (no options, empty content)", async () => {
+  it("posts a subagent_start marker with brief status text (no delivery options)", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "result text" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku" });
@@ -81,15 +81,14 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const [startMsg, startOpts] = pi.sendMessage.mock.calls[0];
     expect(startMsg.details.mode).toBe("subagent_start");
     expect(startMsg.details.model).toBe("haiku");
-    // Empty content keeps the prompt out of the parent's LLM context (the
-    // subagent already has it). No options → idle: silent append + emit
-    // (immediately visible in chat); streaming: `agent.steer` with empty
-    // content (LLM-invisible, no extra turn triggered).
-    expect(startMsg.content).toEqual([]);
+    // Non-empty content prevents session poisoning (empty content gets filtered
+    // by pi-ai, leaving conversation ending on assistant — Anthropic 400s).
+    expect(startMsg.content.length).toBeGreaterThan(0);
+    expect(startMsg.content[0].text.length).toBeGreaterThan(0);
     expect(startOpts).toBeUndefined();
   });
 
-  it("posts a silent subagent_done marker when notify is unset (no options, empty content)", async () => {
+  it("posts a subagent_done marker with non-empty content when notify is unset (prevents session poisoning)", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku" });
@@ -101,13 +100,11 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const [doneMsg, doneOpts] = pi.sendMessage.mock.calls[1];
     expect(doneMsg.details.mode).toBe("subagent_done");
     expect(doneMsg.details.output).toBe("OK");
-    // notify=false: snippet stays in `details` for the renderer, but content
-    // is empty and no options are passed so the parent agent isn't woken.
-    // Regression guard for "notify=false still wakes parent" — the previous
-    // `{deliverAs: "followUp", triggerTurn: false}` would still queue a
-    // follow-up turn when the parent was streaming (the followUp branch in
-    // sendCustomMessage takes precedence over the triggerTurn check).
-    expect(doneMsg.content).toEqual([]);
+    // notify=false: no delivery options so parent isn't woken, but content
+    // is non-empty to prevent session poisoning (empty content gets filtered
+    // by pi-ai, leaving conversation ending on assistant — Anthropic 400s).
+    expect(doneMsg.content.length).toBeGreaterThan(0);
+    expect(doneMsg.content[0].text).toBe("OK");
     expect(doneOpts).toBeUndefined();
   });
 
@@ -203,6 +200,63 @@ describe("CronScheduler — subagent path marker delivery", () => {
     expect(storage.getJob("job-1").runCount).toBe(7);
   });
 });
+
+  it("uses placeholder text when subagent produces no output with notify=true (#10)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", notify: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [doneMsg] = pi.sendMessage.mock.calls[1];
+    expect(doneMsg.content[0].text).toBe("(subagent produced no text output)");
+  });
+
+  it("uses placeholder text when subagent produces no output with notify=false (#10 + #12)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku" });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [doneMsg] = pi.sendMessage.mock.calls[1];
+    // Even with notify=false, content must be non-empty to prevent session poisoning.
+    expect(doneMsg.content.length).toBeGreaterThan(0);
+    expect(doneMsg.content[0].text).toBe("(subagent produced no text output)");
+    expect(doneMsg.details.output).toBe("(subagent produced no text output)");
+  });
+
+  it("uses placeholder text when subagent errors with empty error message (#10)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: false, error: "" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", notify: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [errMsg] = pi.sendMessage.mock.calls[1];
+    expect(errMsg.content[0].text).toBe("(subagent failed with empty error)");
+  });
+
+  it("uses placeholder text when subagent errors with empty error message and notify=false (#10 + #12)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: false, error: "" });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku" });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [errMsg] = pi.sendMessage.mock.calls[1];
+    expect(errMsg.content.length).toBeGreaterThan(0);
+    expect(errMsg.content[0].text).toBe("(subagent failed with empty error)");
+    expect(errMsg.details.error).toBe("(subagent failed with empty error)");
+  });
 
 describe("CronScheduler — start() recovery", () => {
   it("clears stale lastStatus=running on start (interrupted-by-shutdown recovery)", () => {
