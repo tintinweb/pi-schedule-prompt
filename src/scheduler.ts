@@ -310,7 +310,7 @@ export class CronScheduler {
       try {
         let result: SubagentResult;
         try {
-          result = await runSubagentOnce(this.ctx, job.prompt, model, controller.signal, { allowExtensions: job.allowExtensions === true, allowSkills: job.allowSkills === true });
+          result = await runSubagentOnce(this.ctx, job.prompt, model, controller.signal, { extensions: job.extensions === true || Array.isArray(job.extensions) ? job.extensions : (job.extensions ? true : false), skills: job.skills === true || Array.isArray(job.skills) ? job.skills : (job.skills ? true : false) });
         } finally {
           this.activeSubagents.delete(controller);
         }

@@ -25,10 +25,10 @@ export type SubagentResult =
   | { ok: false; error: string };
 
 export interface RunSubagentOptions {
-  /** If true, load extensions in the subagent. Default false. */
-  allowExtensions?: boolean;
-  /** If true, load skills in the subagent. Default false. */
-  allowSkills?: boolean;
+  /** If true, load all extensions. If an array, only those named. Default undefined (none). */
+  extensions?: boolean | string[];
+  /** If true, load all skills. If an array, only those named. Default undefined (none). */
+  skills?: boolean | string[];
 }
 
 export function resolveModel(
@@ -104,17 +104,41 @@ export async function runSubagentOnce(
     }
 
     const agentDir = getAgentDir();
+
+    // Helper: convert extensions/skills option to boolean and optionally filter
+    const isEnabled = (v: boolean | string[] | undefined): boolean =>
+      v === true || Array.isArray(v);
+    const getNameList = (v: boolean | string[] | undefined): string[] | undefined =>
+      Array.isArray(v) ? v : undefined;
+
+    const extList = getNameList(options.extensions);
+    const skillList = getNameList(options.skills);
+
     const loader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
       // Prevent recursive loading of this extension into the subagent.
       // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
-      // allowExtensions controls extensions (Telegram, MCP tools, etc.);
-      // allowSkills controls skill files. They are independent concerns.
-      noExtensions: !options.allowExtensions,
-      noSkills: !options.allowSkills,
+      noExtensions: !isEnabled(options.extensions),
+      noSkills: !isEnabled(options.skills),
       noPromptTemplates: true,
       noThemes: true,
+      ...(extList && {
+        extensionsOverride: (base) => ({
+          ...base,
+          extensions: base.extensions.filter((ext) =>
+            extList.some((name) => ext.path.toLowerCase().includes(name.toLowerCase())),
+          ),
+        }),
+      }),
+      ...(skillList && {
+        skillsOverride: (base) => ({
+          ...base,
+          skills: base.skills.filter((skill) =>
+            skillList.includes(skill.name || ""),
+          ),
+        }),
+      }),
     });
     await loader.reload();
 
@@ -125,11 +149,11 @@ export async function runSubagentOnce(
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
-      tools: options.allowExtensions ? undefined : DEFAULT_TOOL_NAMES,
+      tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
-    if (options.allowExtensions) {
+    if (isEnabled(options.extensions)) {
       await session.bindExtensions({});
     }
     let onAbort: (() => void) | undefined;

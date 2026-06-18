@@ -572,47 +572,47 @@ describe("CronScheduler.describeSchedule", () => {
   });
 });
 
-describe("CronScheduler — allowExtensions", () => {
+describe("CronScheduler — extensions/skills", () => {
   beforeEach(() => {
     mockRunSubagentOnce.mockReset();
   });
 
-  it("passes allowExtensions=true to runSubagentOnce when job has allowExtensions=true", async () => {
+  it("passes extensions=true to runSubagentOnce when job has extensions=true", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
-    const job = exampleJob({ model: "haiku", allowExtensions: true });
+    const job = exampleJob({ model: "haiku", extensions: true });
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: true, allowSkills: false });
+    expect(options).toEqual({ extensions: true, skills: false });
   });
 
-  it("passes allowExtensions=false to runSubagentOnce when job has no allowExtensions", async () => {
+  it("passes extensions=false to runSubagentOnce when job has no extensions", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
-    const job = exampleJob({ model: "haiku" }); // no allowExtensions
+    const job = exampleJob({ model: "haiku" }); // no extensions
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: false, allowSkills: false });
+    expect(options).toEqual({ extensions: false, skills: false });
   });
 
-  it("passes allowExtensions=false to runSubagentOnce when job has allowExtensions=false", async () => {
+  it("passes extensions=false to runSubagentOnce when job has extensions=false", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
-    const job = exampleJob({ model: "haiku", allowExtensions: false });
+    const job = exampleJob({ model: "haiku", extensions: false });
     const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
-    expect(options).toEqual({ allowExtensions: false, allowSkills: false });
+    expect(options).toEqual({ extensions: false, skills: false });
   });
 });

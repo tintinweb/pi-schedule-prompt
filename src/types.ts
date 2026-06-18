@@ -44,10 +44,10 @@ export interface CronJob {
   model?: string;
   /** Subagent jobs only. If true, the parent agent is woken up to react to the subagent's result. Default false (result lands in chat silently). */
   notify?: boolean;
-  /** Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.). Default false. */
-  allowExtensions?: boolean;
-  /** Subagent jobs only. If true, the subagent loads skills. Default false. */
-  allowSkills?: boolean;
+  /** Subagent jobs only. If true, loads all registered extensions. If an array of package names, only those extensions. Default undefined (none). */
+  extensions?: boolean | string[];
+  /** Subagent jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
+  skills?: boolean | string[];
 }
 
 /**
@@ -120,17 +120,25 @@ export const CronToolParams = Type.Object({
         "Subagent jobs only. If true, the parent agent is nudged to react to the subagent's result. Default false: the result is shown in chat but the parent is not interrupted. Ignored for inline (no-model) jobs, where the prompt itself already wakes the parent. Recommended only for low-frequency jobs.",
     })
   ),
-  allowExtensions: Type.Optional(
-    Type.Boolean({
-      description:
-        "Subagent jobs only. If true, the subagent loads extensions (Telegram, MCP, etc.). Default false.",
-    })
+  extensions: Type.Optional(
+    Type.Union([
+      Type.Boolean({
+        description: "If true, loads all registered extensions.",
+      }),
+      Type.Array(Type.String(), {
+        description: "List of extension package names to load.",
+      }),
+    ])
   ),
-  allowSkills: Type.Optional(
-    Type.Boolean({
-      description:
-        "Subagent jobs only. If true, the subagent loads skills. Default false.",
-    })
+  skills: Type.Optional(
+    Type.Union([
+      Type.Boolean({
+        description: "If true, loads all skills.",
+      }),
+      Type.Array(Type.String(), {
+        description: "List of skill names to load.",
+      }),
+    ])
   ),
 });
 

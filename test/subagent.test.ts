@@ -245,12 +245,12 @@ describe("runSubagentOnce", () => {
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 
-  it("allowExtensions:true: sets noExtensions=false, noSkills=true, tools=undefined, calls bindExtensions", async () => {
+  it("extensions:true: sets noExtensions=false, noSkills=true, tools=undefined, calls bindExtensions", async () => {
     const fakeSession = makeFakeSession();
     mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
 
     const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
-      allowExtensions: true,
+      extensions: true,
     });
 
     expect(result.ok).toBe(true);
@@ -268,12 +268,12 @@ describe("runSubagentOnce", () => {
     expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
   });
 
-  it("allowSkills:true: sets noExtensions=true, noSkills=false, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
+  it("skills:true: sets noExtensions=true, noSkills=false, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
     const fakeSession = makeFakeSession();
     mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
 
     const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
-      allowSkills: true,
+      skills: true,
     });
 
     expect(result.ok).toBe(true);
@@ -291,13 +291,13 @@ describe("runSubagentOnce", () => {
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 
-  it("allowExtensions:true + allowSkills:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
+  it("extensions:true + skills:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
     const fakeSession = makeFakeSession();
     mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
 
     const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
-      allowExtensions: true,
-      allowSkills: true,
+      extensions: true,
+      skills: true,
     });
 
     expect(result.ok).toBe(true);
@@ -313,5 +313,44 @@ describe("runSubagentOnce", () => {
 
     // bindExtensions should have been called
     expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("extensions:[\"pkg\"]: filters extensions, sets noExtensions=false, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: ["telegram"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(typeof loaderOptions.extensionsOverride).toBe("function");
+
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("skills:[\"git\"]: filters skills, sets noSkills=false", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      skills: ["git"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noSkills).toBe(false);
+    expect(typeof loaderOptions.skillsOverride).toBe("function");
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 });
