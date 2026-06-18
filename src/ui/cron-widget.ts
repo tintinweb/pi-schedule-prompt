@@ -182,7 +182,7 @@ export class CronWidget {
       const lastText = job.lastRun ? lastPadded : theme.fg("dim", lastPadded);
 
       // Run count (pad to 3 chars for alignment)
-      const countText = theme.fg("accent", job.runCount.toString().padEnd(3));
+      const countText = theme.fg("accent", (job.runCount ?? 0).toString().padEnd(3));
 
       // Model badge (only for jobs that run in a subagent).
       // Trailing "!" marks jobs that wake the parent agent on completion (notify=true).
