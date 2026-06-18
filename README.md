@@ -2,17 +2,14 @@
 
 A "Heartbeat" like prompt scheduling [Pi](https://pi.dev) extension that allows the Agent to self-schedule future prompts to execute at specific times or intervals - for reminders, deferred tasks, and recurring automation.
 
-
 <img width="600"  alt="image" src="https://github.com/tintinweb/pi-schedule-prompt/raw/master/media/screenshot.png" />
 
-
-
-
-https://github.com/user-attachments/assets/8c723cc4-cf3e-4b6a-abf5-85d4f46c73ba
+<https://github.com/user-attachments/assets/8c723cc4-cf3e-4b6a-abf5-85d4f46c73ba>
 
 > **Status:** Production-ready. Natural language scheduling with cron expressions, intervals, relative time, and one-shot timers.
 
 Schedule future prompts with natural language:
+
 - **"schedule 'analyze logs' every hour"** (recurring)
 - **"remind me to review PR in 30 minutes"** (one-time)
 - **"defer that task until tomorrow at 9am"** (specific time)
@@ -20,9 +17,10 @@ Schedule future prompts with natural language:
 ## Features
 
 ### Core `schedule_prompt` Tool
+
 - **Natural language scheduling**: "schedule X in 5 minutes", "every hour do Y"
 - **Multiple formats**: Cron expressions, intervals, ISO timestamps, relative time (+5m, +1h)
-- **Job types**: 
+- **Job types**:
   - **Recurring** (cron/interval) — repeats automatically
   - **One-shot** (once) — runs once then auto-disables
 - **Per-task model (optional)**: set `model` on a job to run that prompt in a separate in-process agent session — your current chat is not affected
@@ -32,7 +30,9 @@ Schedule future prompts with natural language:
 ### Use Cases
 
 #### Schedule (Recurring Tasks)
+
 Execute prompts repeatedly at set intervals:
+
 ```
 "schedule 'check build status' every 5 minutes"
 "run 'analyze metrics' every hour"
@@ -40,15 +40,17 @@ Execute prompts repeatedly at set intervals:
 ```
 
 #### Remind (One-time Notifications)
+
 Get prompted to do something once at a specific time:
+
 ```
 "remind me to review the PR in 30 minutes"
 "remind me to check deployment status in 1 hour"
 "remind me tomorrow at 9am to follow up on the issue"
 ```
 
-
 ### Enhanced Pi Features
+
 - ✓ **Live widget** below editor showing active schedules (auto-hides when empty)
 - ✓ **Human-readable display**: "every minute", "daily at 9:00" instead of raw cron expressions
 - ✓ **Status tracking**: next run, last run, execution count, errors, prompt preview
@@ -60,16 +62,19 @@ Get prompted to do something once at a specific time:
 ## Install
 
 **Option A — Install from npm:**
+
 ```bash
 pi install npm:pi-schedule-prompt
 ```
 
 **Option B — Load directly (dev):**
+
 ```bash
 pi -e ~/projects/pi-cron-schedule/src/index.ts
 ```
 
 **Option C — Install from local folder:**
+
 ```bash
 pi install ~/projects/pi-cron-schedule
 ```
@@ -118,6 +123,7 @@ The widget displays below your editor (only when jobs exist):
 | `description` | string | no | Free-form note |
 | `model` | non-empty string | no | If set, run the prompt in a fresh in-process agent session with this model instead of injecting into the current chat. Accepts fuzzy names (`haiku`, `sonnet`) or `provider/model-id`. To switch a job from subagent back to inline mode, remove and re-add it without `model` (no in-place clearing) |
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
+| `allowExtensions` | boolean | no | Subagent-only. If `true`, the subagent can load extensions (Telegram, MCP tools) and skills. Default `false`. No-op for inline (no-model) jobs |
 
 ### Schedule Formats
 
@@ -131,6 +137,7 @@ The tool accepts multiple time formats:
 | **Cron expression** | `0 */5 * * * *` | cron | Runs on cron schedule |
 
 **Cron format** (6 fields - **must include seconds**):
+
 ```
 ┌─ second (0-59)
 │ ┌─ minute (0-59)
@@ -152,6 +159,7 @@ The tool accepts multiple time formats:
 ## How It Works
 
 **Storage:**
+
 - Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
 - Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
 
@@ -164,22 +172,26 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 **Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 
 **Scheduler:**
+
 - Uses `croner` library for cron expressions
 - Native `setTimeout`/`setInterval` for intervals and one-shots
 - Tracks: next run, last run, execution count, status (running/success/error)
 
 **Execution:**
+
 - Sends scheduled prompt as user message to Pi agent
 - Displays custom message showing what was triggered
 - Updates job statistics after each run
 
 **Safety:**
+
 - **Infinite loop prevention**: Blocks scheduled jobs from creating more schedules
 - **Past timestamp detection**: Auto-disables jobs scheduled in the past
 - **Duplicate names**: Prevents name collisions
 - **Auto-cleanup**: Removes disabled jobs on exit
 
 **Widget:**
+
 - Auto-hides when no jobs configured
 - Shows: status icon, name, schedule (human-readable), prompt (truncated), next run, last run, run count
 - Human-readable formatting: "every minute", "daily", "Feb 13 15:30" instead of raw cron/ISO
@@ -190,6 +202,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 ## Examples
 
 ### One-time reminders
+
 ```
 "remind me to check logs in 5 minutes"
   → schedule="+5m", type=once
@@ -199,6 +212,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 ```
 
 ### Recurring tasks
+
 ```
 "analyze error rates every 10 minutes"
   → schedule="10m", type=interval
@@ -214,6 +228,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 ```
 
 ### Heartbeat monitoring
+
 ```
 "check system health every 5 minutes"
   → schedule="5m", type=interval
@@ -240,16 +255,19 @@ By default the result is shown in chat but the parent agent is **not** woken up 
 ## Development
 
 **TypeScript check:**
+
 ```bash
 npx tsc --noEmit
 ```
 
 **Run the test suite (vitest):**
+
 ```bash
 npm test
 ```
 
 **Test with Pi:**
+
 ```bash
 pi -e ./src/index.ts
 ```
