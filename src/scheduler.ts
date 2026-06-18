@@ -323,7 +323,7 @@ export class CronScheduler {
         // to post the marker. The marker is best-effort (pi may be invalidated
         // during teardown) and must never leave the job stuck in "running".
         if (result.ok) {
-          const outputSnippet = snippet(result.text) || "(subagent produced no text output)";
+          const outputSnippet = snippet(result.text.trim()) || "(subagent produced no text output)";
           // Re-read runCount from storage; `job` here is the closure-captured
           // snapshot from scheduleJob and would yield a stale count.
           const latest = this.storage.getJob(job.id);
@@ -364,7 +364,7 @@ export class CronScheduler {
         } else {
           // Truncate the error the same way as the success snippet — verbose
           // API errors / stack traces would otherwise overflow the chat row.
-          const errorSnippet = snippet(result.error) || "(subagent failed with empty error)";
+          const errorSnippet = snippet(result.error.trim()) || "(subagent failed with empty error)";
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "error",

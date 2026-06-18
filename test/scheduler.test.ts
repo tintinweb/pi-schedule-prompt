@@ -258,6 +258,32 @@ describe("CronScheduler — subagent path marker delivery", () => {
     expect(errMsg.details.error).toBe("(subagent failed with empty error)");
   });
 
+  it("uses placeholder text when subagent produces whitespace-only output (edge case)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "   " });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", notify: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [doneMsg] = pi.sendMessage.mock.calls[1];
+    expect(doneMsg.content[0].text).toBe("(subagent produced no text output)");
+  });
+
+  it("uses placeholder text when subagent returns whitespace-only error (edge case)", async () => {
+    mockRunSubagentOnce.mockResolvedValue({ ok: false, error: "   " });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", notify: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [errMsg] = pi.sendMessage.mock.calls[1];
+    expect(errMsg.content[0].text).toBe("(subagent failed with empty error)");
+  });
+
 describe("CronScheduler — start() recovery", () => {
   it("clears stale lastStatus=running on start (interrupted-by-shutdown recovery)", () => {
     // Simulates the previous session crashing/aborting mid-execution: storage
