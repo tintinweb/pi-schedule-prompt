@@ -48,6 +48,8 @@ export interface CronJob {
   extensions?: boolean | string[];
   /** Subagent jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
+  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
+  session?: string;
 }
 
 /**

@@ -105,11 +105,12 @@ export async function runSubagentOnce(
 
     const agentDir = getAgentDir();
 
-    // Helper: convert extensions/skills option to boolean and optionally filter
+    // Helper: convert extensions/skills option to boolean and optionally filter.
+    // An empty array means "none" — same as unset.
     const isEnabled = (v: boolean | string[] | undefined): boolean =>
-      v === true || Array.isArray(v);
+      v === true || (Array.isArray(v) && v.length > 0);
     const getNameList = (v: boolean | string[] | undefined): string[] | undefined =>
-      Array.isArray(v) ? v : undefined;
+      Array.isArray(v) && v.length > 0 ? v : undefined;
 
     const extList = getNameList(options.extensions);
     const skillList = getNameList(options.skills);

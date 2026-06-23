@@ -3,8 +3,6 @@ import {
   describeAvailableModels,
   getLastAssistantText,
   resolveModel,
-} from "../src/subagent.js";
-import {
   runSubagentOnce,
 } from "../src/subagent.js";
 
@@ -12,6 +10,9 @@ import {
 // Must be at file scope — vitest hoists vi.mock to the top automatically.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: vi.fn(),
+  // Instantiated via `new DefaultResourceLoader(...)`, so the mock must be a
+  // constructable function expression — an arrow function can't be `new`-ed.
+  // biome-ignore lint/complexity/useArrowFunction: used as a constructor mock
   DefaultResourceLoader: vi.fn(function () {
     return { reload: vi.fn().mockResolvedValue(undefined) };
   }),
@@ -330,6 +331,13 @@ describe("runSubagentOnce", () => {
     expect(loaderOptions.noExtensions).toBe(false);
     expect(typeof loaderOptions.extensionsOverride).toBe("function");
 
+    // The override keeps only extensions whose path matches a requested name
+    // (substring match against the extension path).
+    const filtered = loaderOptions.extensionsOverride({
+      extensions: [{ path: "npm:pi-telegram" }, { path: "npm:pi-mcp-adapter" }],
+    });
+    expect(filtered.extensions.map((e: { path: string }) => e.path)).toEqual(["npm:pi-telegram"]);
+
     const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
     expect(sessionOptions.tools).toBeUndefined();
 
@@ -350,6 +358,50 @@ describe("runSubagentOnce", () => {
     const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
     expect(loaderOptions.noSkills).toBe(false);
     expect(typeof loaderOptions.skillsOverride).toBe("function");
+
+    // The override keeps only exactly-named skills — "git" must not match "github".
+    const filtered = loaderOptions.skillsOverride({
+      skills: [{ name: "git" }, { name: "github" }, { name: "docs" }],
+    });
+    expect(filtered.skills.map((s: { name: string }) => s.name)).toEqual(["git"]);
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("skills:[]: empty array means none — same as unset", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      skills: [],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noSkills).toBe(true);
+    expect(loaderOptions.skillsOverride).toBeUndefined();
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("extensions:[]: empty array means none — same as unset", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: [],
+    });
+
+    expect(result.ok).toBe(true);
+
+    // An empty array must not widen the toolset or load extensions.
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.extensionsOverride).toBeUndefined();
+
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
 
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
