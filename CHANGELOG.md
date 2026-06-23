@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-23
+
 ### Added
 - Per-job `extensions` and `skills` fields on subagent jobs (closes #13). Each accepts `boolean | string[]`: `true` loads all registered extensions/skills, an array loads only the named ones, and unset or an empty array loads none (default — current behavior unchanged). Plumbed from the `schedule_prompt` `add`/`update` tool params through `CronJob` to `runSubagentOnce`, which drives `noExtensions`/`noSkills` and `extensionsOverride`/`skillsOverride` on the resource loader
 - Enabling `extensions` also switches the subagent from the default builtin toolset to the full set (`tools: undefined`) and calls `session.bindExtensions()` — both are required for extension-provided tools to activate (e.g. MCP, Telegram). `skills` does not widen the toolset: skills surface via the system prompt and the `read` tool. Both fields are no-ops for inline (no-model) jobs
