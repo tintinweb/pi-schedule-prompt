@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { CronScheduler, formatISOShort, humanizeCron } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
@@ -118,10 +118,17 @@ export class CronWidget {
     );
     
     const container = new Container();
-    const borderColor = (s: string) => theme.fg("accent", s);
+
+    class LocalBorder implements Component {
+      render(w: number) {
+        const char = theme.boxRound?.horizontal || "─";
+        return [theme.fg("accent", char.repeat(Math.max(1, w)))];
+      }
+      invalidate() {}
+    }
 
     // Header
-    container.addChild(new DynamicBorder(borderColor));
+    container.addChild(new LocalBorder());
     container.addChild(
       new Text(
         theme.fg("accent", theme.bold("Scheduled Prompts")) + theme.fg("dim", ` (${uniqueJobs.length} jobs)`),
@@ -198,7 +205,7 @@ export class CronWidget {
     }
 
     container.addChild(new Text(lines.join("\n"), 1, 0));
-    container.addChild(new DynamicBorder(borderColor));
+    container.addChild(new LocalBorder());
 
     return container.render(width);
   }

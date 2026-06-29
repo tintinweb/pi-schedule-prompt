@@ -10,22 +10,15 @@ import {
 // Must be at file scope — vitest hoists vi.mock to the top automatically.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: vi.fn(),
-  // Instantiated via `new DefaultResourceLoader(...)`, so the mock must be a
-  // constructable function expression — an arrow function can't be `new`-ed.
-  // biome-ignore lint/complexity/useArrowFunction: used as a constructor mock
-  DefaultResourceLoader: vi.fn(function () {
-    return { reload: vi.fn().mockResolvedValue(undefined) };
-  }),
+  // Mock no longer needs DefaultResourceLoader since we removed it
+  DefaultResourceLoader: vi.fn(),
   getAgentDir: vi.fn(() => "/tmp/agent-dir"),
   SessionManager: { inMemory: vi.fn(() => ({ getSessionId: () => "test" })) },
   SettingsManager: { create: vi.fn(() => ({})) },
 }));
-
-import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+import { createAgentSession } from "@earendil-works/pi-coding-agent";
 
 const mockCreateAgentSession = vi.mocked(createAgentSession);
-const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader);
-
 // Mirror of the minimal Model shape resolveModel actually touches: provider, id, name.
 const MODELS = [
   { id: "claude-opus-4-6", name: "Claude Opus 4.6", provider: "anthropic" },
@@ -199,7 +192,6 @@ describe("getLastAssistantText", () => {
 describe("runSubagentOnce", () => {
   beforeEach(() => {
     mockCreateAgentSession.mockReset();
-    mockDefaultResourceLoader.mockReset();
   });
 
   function makeFakeSession() {
@@ -233,15 +225,12 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: true
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(true);
-    expect(loaderOptions.noSkills).toBe(true);
+    // Check createAgentSession was called with extensions disabled
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(true);
 
     // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
-    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
     expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
-
     // bindExtensions should NOT have been called
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
@@ -256,13 +245,11 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: true
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(false);
-    expect(loaderOptions.noSkills).toBe(true);
+    // Check createAgentSession was called with extensions enabled
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(false);
 
     // Check createAgentSession was called with tools: undefined
-    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
     expect(sessionOptions.tools).toBeUndefined();
 
     // bindExtensions should have been called
@@ -279,15 +266,12 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: false
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(true);
-    expect(loaderOptions.noSkills).toBe(false);
+    // Check createAgentSession was called with extensions disabled (skills alone don't enable extensions)
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(true);
 
     // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
-    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
     expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
-
     // bindExtensions should NOT have been called
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
@@ -303,13 +287,11 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: false
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(false);
-    expect(loaderOptions.noSkills).toBe(false);
+    // Check createAgentSession was called with extensions enabled
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(false);
 
     // Check createAgentSession was called with tools: undefined
-    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
     expect(sessionOptions.tools).toBeUndefined();
 
     // bindExtensions should have been called
@@ -327,20 +309,10 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(false);
-    expect(typeof loaderOptions.extensionsOverride).toBe("function");
-
-    // The override keeps only extensions whose path matches a requested name
-    // (substring match against the extension path).
-    const filtered = loaderOptions.extensionsOverride({
-      extensions: [{ path: "npm:pi-telegram" }, { path: "npm:pi-mcp-adapter" }],
-    });
-    expect(filtered.extensions.map((e: { path: string }) => e.path)).toEqual(["npm:pi-telegram"]);
-
     const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    // Array is treated as enabled discovery in the new OMP compat layer
+    expect(sessionOptions.disableExtensionDiscovery).toBe(false);
     expect(sessionOptions.tools).toBeUndefined();
-
     expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
   });
 
@@ -355,15 +327,8 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noSkills).toBe(false);
-    expect(typeof loaderOptions.skillsOverride).toBe("function");
-
-    // The override keeps only exactly-named skills — "git" must not match "github".
-    const filtered = loaderOptions.skillsOverride({
-      skills: [{ name: "git" }, { name: "github" }, { name: "docs" }],
-    });
-    expect(filtered.skills.map((s: { name: string }) => s.name)).toEqual(["git"]);
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(true);
 
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
@@ -378,10 +343,8 @@ describe("runSubagentOnce", () => {
 
     expect(result.ok).toBe(true);
 
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noSkills).toBe(true);
-    expect(loaderOptions.skillsOverride).toBeUndefined();
-
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.disableExtensionDiscovery).toBe(true);
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 
@@ -396,13 +359,10 @@ describe("runSubagentOnce", () => {
     expect(result.ok).toBe(true);
 
     // An empty array must not widen the toolset or load extensions.
-    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
-    expect(loaderOptions.noExtensions).toBe(true);
-    expect(loaderOptions.extensionsOverride).toBeUndefined();
-
     const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
-    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+    expect(sessionOptions.disableExtensionDiscovery).toBe(true);
 
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 });
