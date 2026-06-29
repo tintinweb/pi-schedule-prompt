@@ -11,7 +11,6 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
-  DefaultResourceLoader,
   type ExtensionContext,
   getAgentDir,
   SessionManager,
@@ -109,53 +108,27 @@ export async function runSubagentOnce(
     // An empty array means "none" — same as unset.
     const isEnabled = (v: boolean | string[] | undefined): boolean =>
       v === true || (Array.isArray(v) && v.length > 0);
-    const getNameList = (v: boolean | string[] | undefined): string[] | undefined =>
-      Array.isArray(v) && v.length > 0 ? v : undefined;
+    const toolList = isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES;
 
-    const extList = getNameList(options.extensions);
-    const skillList = getNameList(options.skills);
-
-    const loader = new DefaultResourceLoader({
-      cwd: ctx.cwd,
-      agentDir,
-      // Prevent recursive loading of this extension into the subagent.
-      // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
-      noExtensions: !isEnabled(options.extensions),
-      noSkills: !isEnabled(options.skills),
-      noPromptTemplates: true,
-      noThemes: true,
-      ...(extList && {
-        extensionsOverride: (base) => ({
-          ...base,
-          extensions: base.extensions.filter((ext) =>
-            extList.some((name) => ext.path.toLowerCase().includes(name.toLowerCase())),
-          ),
-        }),
-      }),
-      ...(skillList && {
-        skillsOverride: (base) => ({
-          ...base,
-          skills: base.skills.filter((skill) =>
-            skillList.includes(skill.name || ""),
-          ),
-        }),
-      }),
-    });
-    await loader.reload();
-
-    const { session } = await createAgentSession({
+    const sessionOpts: Record<string, unknown> = {
       cwd: ctx.cwd,
       agentDir,
       sessionManager: SessionManager.inMemory(ctx.cwd),
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
-      tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,
-      resourceLoader: loader,
-    });
+      tools: toolList,
+      toolNames: toolList,
+      disableExtensionDiscovery: !isEnabled(options.extensions),
+    };
 
-    if (isEnabled(options.extensions)) {
-      await session.bindExtensions({});
+    const { session } = await createAgentSession(
+      sessionOpts as unknown as Parameters<typeof createAgentSession>[0]
+    );
+
+    const maybeBind = session as unknown as { bindExtensions?: (opts: object) => Promise<void> };
+    if (isEnabled(options.extensions) && typeof maybeBind.bindExtensions === "function") {
+      await maybeBind.bindExtensions({});
     }
     let onAbort: (() => void) | undefined;
     if (signal) {
