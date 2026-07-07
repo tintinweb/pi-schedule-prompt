@@ -140,19 +140,18 @@ export class CronScheduler {
         this.intervals.set(job.id, interval);
       } else if (job.type === "once") {
         // One-shot execution at a specific time
+        // Uses Cron with a Date instead of setTimeout to avoid the 32-bit
+        // integer overflow (~24.855 days max) that causes far-future jobs
+        // to fire immediately.
         const targetDate = new Date(job.schedule);
-        const now = new Date();
-        const delay = targetDate.getTime() - now.getTime();
-
-        if (delay > 0) {
-          const timeout = setTimeout(() => {
+        if (targetDate.getTime() > Date.now()) {
+          const cron = new Cron(targetDate, () => {
             this.executeJob(job);
             // Auto-disable one-shot jobs after execution
             this.storage.updateJob(job.id, { enabled: false });
             this.emitChange({ type: "update", job: { ...job, enabled: false } });
-          }, delay);
-          // Store as interval for cleanup purposes
-          this.intervals.set(job.id, timeout as any);
+          });
+          this.jobs.set(job.id, cron);
         } else {
           // Job is in the past - disable it and log warning
           console.warn(`Job ${job.id} (${job.name}) scheduled for past time: ${job.schedule}`);
