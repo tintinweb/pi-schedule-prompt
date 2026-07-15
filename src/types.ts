@@ -40,13 +40,13 @@ export interface CronJob {
   runCount: number;
   /** Optional description */
   description?: string;
-  /** If set, run the prompt in a separate in-process agent session using this model instead of injecting into the current chat. */
+  /** If set, run the prompt in a separate in-process session under this model when the job fires, instead of injecting into the current chat. */
   model?: string;
-  /** Subagent jobs only. If true, the parent agent is woken up to react to the subagent's result. Default false (result lands in chat silently). */
+  /** Model-run jobs only. If true, the parent session is woken up to react to the scheduled run's result. Default false (result lands in chat silently). */
   notify?: boolean;
-  /** Subagent jobs only. If true, loads all registered extensions. If an array of package names, only those extensions. Default undefined (none). */
+  /** Model-run jobs only. If true, loads all registered extensions. If an array of package names, only those extensions. Default undefined (none). */
   extensions?: boolean | string[];
-  /** Subagent jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
+  /** Model-run jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
   /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
   session?: string;
@@ -113,32 +113,32 @@ export const CronToolParams = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        "Optional. If set, runs the prompt in a separate in-process agent session using this model (e.g. 'haiku', 'sonnet', or 'provider/model-id'). If omitted, the prompt is injected into the current chat. Must be a non-empty string — to switch a job from subagent back to inline mode, remove the job and re-add it without a model.",
+        "Optional. When this scheduled job fires, run its prompt under this model (e.g. 'haiku', 'sonnet', or 'provider/model-id') instead of injecting it into the current chat. Must be a non-empty string; to switch a job back to inline mode, remove and re-add it without a model.",
     })
   ),
   notify: Type.Optional(
     Type.Boolean({
       description:
-        "Subagent jobs only. If true, the parent agent is nudged to react to the subagent's result. Default false: the result is shown in chat but the parent is not interrupted. Ignored for inline (no-model) jobs, where the prompt itself already wakes the parent. Recommended only for low-frequency jobs.",
+        "Scheduled model-run jobs only (jobs with 'model' set). If true, the parent session is nudged to react to the scheduled run's result when it fires. Default false: the result is shown in chat but the parent is not interrupted. Ignored for inline (no-model) jobs, where the prompt itself already wakes the parent. Recommended only for low-frequency jobs.",
     })
   ),
   extensions: Type.Optional(
     Type.Union([
       Type.Boolean({
-        description: "If true, loads all registered extensions.",
+        description: "Scheduled model-run jobs only. If true, loads all registered extensions into the scheduled run.",
       }),
       Type.Array(Type.String(), {
-        description: "List of extension package names to load.",
+        description: "Scheduled model-run jobs only. List of extension package names to load into the scheduled run.",
       }),
     ])
   ),
   skills: Type.Optional(
     Type.Union([
       Type.Boolean({
-        description: "If true, loads all skills.",
+        description: "Scheduled model-run jobs only. If true, loads all skills into the scheduled run.",
       }),
       Type.Array(Type.String(), {
-        description: "List of skill names to load.",
+        description: "Scheduled model-run jobs only. List of skill names to load into the scheduled run.",
       }),
     ])
   ),

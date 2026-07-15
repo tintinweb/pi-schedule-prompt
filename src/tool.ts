@@ -20,7 +20,7 @@ export function createCronTool(
     name: "schedule_prompt",
     label: "Schedule Prompt",
     description:
-      "IMPORTANT: For action='add', you MUST provide both 'schedule' parameter AND 'prompt' parameter. Schedule prompts at times/intervals. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Type defaults to 'cron', use 'once' for relative/ISO times. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
+      "Schedule a prompt to fire on a clock/timer — crontab-style reminders and deferred work: a recurring cron, a one-shot run at a future time, or a repeating interval. Reach for this when the trigger is a time ('every morning', 'in 10 minutes', 'at 5pm'). For action='add' provide both 'schedule' AND 'prompt'. Schedule formats: 6-field cron (with seconds: '0 * * * * *' = every minute), ISO timestamp, relative time (+10s, +5m, +1h), or interval (5m, 1h). Type defaults to 'cron'; use 'once' for a single future run at a relative/ISO time. Actions: add (needs schedule+prompt), list, remove/enable/disable/update (need jobId), cleanup.",
     parameters: CronToolParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
