@@ -405,25 +405,25 @@ describe("CronScheduler — shutdown abort", () => {
       }
       throw new Error("pi is stale (simulated teardown)");
     });
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
     const job = exampleJob({ model: "haiku" });
     const storage = makeStorage([job]);
     const scheduler = new CronScheduler(storage, pi, makeCtx());
 
     (scheduler as any).executeJobInSubagent(job);
-    await vi.waitFor(() => expect(consoleSpy).toHaveBeenCalled());
+    await vi.waitFor(() => expect(pi.events.emit).toHaveBeenCalledWith(
+      "cron:change",
+      expect.objectContaining({
+        type: "error",
+        jobId: job.id,
+        error: "Failed to post scheduled prompt marker",
+      }),
+    ));
 
     // Storage was advanced before the marker post, so the job is NOT stuck in "running"
     // even though sendMessage threw. This is the regression guard for the "stuck running"
     // failure mode.
     expect(storage.getJob("job-1").lastStatus).toBe("success");
     expect(storage.getJob("job-1").runCount).toBe(1);
-
-    // The marker failure was logged via the inner try/catch (not the outer backstop).
-    const loggedMessage = consoleSpy.mock.calls[0][0] as string;
-    expect(loggedMessage).toContain(`Failed to post subagent_done marker for job ${job.id}`);
-    consoleSpy.mockRestore();
   });
 });
 

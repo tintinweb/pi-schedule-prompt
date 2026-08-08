@@ -31,20 +31,22 @@
   },
   "dependencies": {
     "croner": "^10.0.1",
-    "nanoid": "^5.0.0"
+    "nanoid": "^5.0.0",
+    "proper-lockfile": "^4.1.2"
   },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src/ test/",
-    "lint:fix": "biome check --fix src/ test/",
+    "lint": "./node_modules/.bin/biome check src/ test/",
+    "lint:fix": "./node_modules/.bin/biome check --write src/ test/",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
     "@types/node": "^25.6.0",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^6.0.3",
     "vitest": "^4.0.18"
   },
