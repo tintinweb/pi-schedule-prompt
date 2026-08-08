@@ -8,6 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import type { CronJobManager } from "../manager.js";
 import { CronScheduler, formatISOShort, humanizeCron } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 
@@ -55,6 +56,7 @@ export class CronWidget {
     private pi: ExtensionAPI,
     private isVisible: () => boolean,
     private sessionId: string | undefined = undefined,
+    private manager?: CronJobManager,
   ) {
     // Re-render on add/remove/update/fire/error so the row count, status icons,
     // and counters stay current without waiting for the 30s tick.
@@ -63,6 +65,7 @@ export class CronWidget {
 
   /** Jobs this session loads — same predicate as the scheduler. */
   private loadedJobs() {
+    if (this.manager) return this.manager.listVisible(this.sessionId);
     return this.storage
       .getAllJobs()
       .filter((j) => CronScheduler.isLoadedFor(j, this.sessionId));
@@ -171,7 +174,7 @@ export class CronWidget {
       const promptText = theme.fg("dim", promptPadded);
 
       // Next run (max 10 chars, pad before coloring)
-      const nextRun = this.scheduler.getNextRun(job.id);
+      const nextRun = this.manager?.getNextRun(job.id) ?? this.scheduler.getNextRun(job.id);
       const nextRaw = nextRun ? formatRelativeTime(nextRun) : "-";
       const nextPadded = nextRaw.padEnd(10);
       const nextText = nextPadded;

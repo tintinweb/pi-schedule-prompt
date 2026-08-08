@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `global` scheduled-job scope. Global jobs use user-level storage, per-job leases, creator-cwd eligibility for inline execution, persisted cwd for subagents, and visibility from every Pi session.
+- Added locked project/global storage mutations, scope migration through the manager facade, global coordinator, and `schedule_prompt.scope` support.
+- Settings and Jobs UI now expose session, workdir, and global scopes; global disabled jobs require explicit cleanup.
+
+### Notes
+- Global jobs still require an open eligible Pi process, do not catch up missed runs, and provide at-most-one healthy owner rather than durable exactly-once delivery.
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

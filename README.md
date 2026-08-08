@@ -161,16 +161,21 @@ The tool accepts multiple time formats:
 
 **Storage:**
 
-- Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
-- Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
+- Local job data: `<cwd>/.pi/schedule-prompts.json` (atomic, locked writes)
+- Global job data: `<getAgentDir()>/schedule-prompts.json` (user-level, locked writes)
+- Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` and `<cwd>/.pi/schedule-prompts-settings.json`; project overrides global on load.
 
-**Job binding:**
+**Job scopes:**
 
-By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi in this cwd (useful for hand-edited project-wide cron), remove its `session` field from `<cwd>/.pi/schedule-prompts.json`.
+- `session`: only creating Pi session fires it.
+- `workdir`: eligible Pis in same cwd fire it; existing behavior preserved.
+- `global`: visible/manageable from every Pi session. At most one healthy eligible Pi process owns/schedules each job through a per-job lease.
 
-Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
+Global inline jobs run only in stored creator cwd. Global subagent jobs may be owned from another cwd, but execute with stored creator cwd. Jobs require at least one eligible Pi process to remain open; no daemon or catch-up exists. A crash exactly at dispatch can lose a run; this is not durable exactly-once delivery.
 
-**Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
+Set default scope for new jobs in `/schedule-prompt → Settings → Default new-job scope`. Tool accepts optional `scope: "session" | "workdir" | "global"`. Scope migrations preserve job ID, stats, prompt, schedule, and execution options.
+
+**Heads up:** schedules only fire while an eligible Pi session is open. A `daily 9am` cron only fires on days at least one eligible Pi is open at 9am.
 
 **Scheduler:**
 
@@ -189,7 +194,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 - **Infinite loop prevention**: Blocks scheduled jobs from creating more schedules
 - **Past timestamp detection**: Auto-disables jobs scheduled in the past
 - **Duplicate names**: Prevents name collisions
-- **Auto-cleanup**: Removes disabled jobs on exit
+- **Auto-cleanup**: Removes disabled local jobs on exit; disabled global jobs require explicit `scope: "global"` cleanup
 
 **Widget:**
 
@@ -278,13 +283,17 @@ pi -e ./src/index.ts
 ```
 src/
   types.ts          # CronJob, CronJobType, CronToolParams
-  storage.ts        # Job persistence (.pi/schedule-prompts.json)
+  scope.ts          # Scope metadata, legacy inference, cwd helpers
+  storage.ts        # Locked job persistence (project + global stores)
   settings.ts       # Settings persistence (global + project, project overrides)
   scheduler.ts      # Core scheduling engine with croner
+  global-coordinator.ts # Per-job global lease ownership
+  manager.ts        # Project/global storage and scheduler facade
   subagent.ts       # Lightweight in-process agent runner (per-task model)
   tool.ts           # schedule_prompt tool definition
   ui/
     cron-widget.ts  # Live status widget below editor
+    jobs-view.ts    # Grouped job management overlay
   index.ts          # Extension entry point
 ```
 

@@ -1,123 +1,144 @@
-import * as fs from "fs";
-import * as path from "path";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import lockfile from "proper-lockfile";
+import { CONFIG_DIR_NAME, normalizeJob, type StoreKind } from "./scope.js";
 import type { CronJob, CronStore } from "./types.js";
 
-/**
- * Handles persistence of scheduled prompts to .pi/schedule-prompts.json
- */
+const STORE_FILE = "schedule-prompts.json";
+const LOCK_OPTIONS = {
+  realpath: false,
+  stale: 10_000,
+  update: 3_000,
+  retries: { retries: 8, minTimeout: 10, maxTimeout: 100 },
+};
+const SYNC_LOCK_OPTIONS = { ...LOCK_OPTIONS, retries: 0 };
+
+function acquireSyncLock(storePath: string): () => void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return lockfile.lockSync(storePath, SYNC_LOCK_OPTIONS);
+    } catch (error: any) {
+      if (error?.code !== "ELOCKED" || attempt >= 8) throw error;
+      const waitMs = Math.min(100, 10 * 2 ** attempt);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
+}
+
+export class DuplicateJobNameError extends Error {
+  constructor(name: string) {
+    super(`A job named "${name}" already exists.`);
+    this.name = "DuplicateJobNameError";
+  }
+}
+
+/** Persistent, atomically-written cron store. Mutations are serialized by a sidecar lock. */
 export class CronStorage {
   private readonly storePath: string;
-  private readonly piDir: string;
+  private readonly kind: StoreKind;
+  private readonly parentDir: string;
 
-  constructor(cwd: string) {
-    this.piDir = path.join(cwd, ".pi");
-    this.storePath = path.join(this.piDir, "schedule-prompts.json");
+  constructor(location: string, kind: StoreKind = "project") {
+    this.kind = kind;
+    this.storePath = kind === "global"
+      ? path.join(location, STORE_FILE)
+      : path.join(location, CONFIG_DIR_NAME, STORE_FILE);
+    this.parentDir = path.dirname(this.storePath);
   }
 
-  /**
-   * Load scheduled prompts from disk
-   */
+  static forProject(cwd: string): CronStorage {
+    return new CronStorage(cwd, "project");
+  }
+
+  static global(): CronStorage {
+    return new CronStorage(getAgentDir(), "global");
+  }
+
+  getStoreKind(): StoreKind {
+    return this.kind;
+  }
+
   load(): CronStore {
     try {
       if (fs.existsSync(this.storePath)) {
-        const data = fs.readFileSync(this.storePath, "utf-8");
-        const store = JSON.parse(data) as CronStore;
-        return store;
+        const store = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as CronStore;
+        return {
+          version: store.version ?? 1,
+          jobs: Array.isArray(store.jobs)
+            ? store.jobs.map((job) => normalizeJob(job, this.kind))
+            : [],
+        };
       }
     } catch (error) {
       console.error("Failed to load scheduled prompts:", error);
     }
-
-    // Return empty store if file doesn't exist or is corrupted
     return { jobs: [], version: 1 };
   }
 
-  /**
-   * Save scheduled prompts to disk
-   */
   save(store: CronStore): void {
-    try {
-      // Ensure .pi directory exists
-      if (!fs.existsSync(this.piDir)) {
-        fs.mkdirSync(this.piDir, { recursive: true });
-      }
+    this.mutateStore((current) => {
+      current.version = store.version;
+      current.jobs = store.jobs;
+    });
+  }
 
-      // Write atomically using temp file
-      const tempPath = `${this.storePath}.tmp`;
+  private mutateStore<T>(mutator: (store: CronStore) => T): T {
+    fs.mkdirSync(this.parentDir, { recursive: true });
+    const release = acquireSyncLock(this.storePath);
+    try {
+      const store = this.load();
+      const result = mutator(store);
+      const tempPath = `${this.storePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
       fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), "utf-8");
       fs.renameSync(tempPath, this.storePath);
-    } catch (error) {
-      console.error("Failed to save scheduled prompts:", error);
-      throw error;
+      return result;
+    } finally {
+      release();
     }
   }
 
-  /**
-   * Check if a job name already exists
-   */
   hasJobWithName(name: string): boolean {
-    const store = this.load();
-    return store.jobs.some((j) => j.name === name);
+    return this.load().jobs.some((job) => job.name === name);
   }
 
-  /**
-   * Add a new job
-   */
   addJob(job: CronJob): void {
-    const store = this.load();
-    store.jobs.push(job);
-    this.save(store);
+    this.mutateStore((store) => {
+      if (store.jobs.some((existing) => existing.name === job.name)) {
+        throw new DuplicateJobNameError(job.name);
+      }
+      store.jobs.push(normalizeJob(job, this.kind));
+    });
   }
 
-  /**
-   * Remove a job by ID
-   */
   removeJob(id: string): boolean {
-    const store = this.load();
-    const initialLength = store.jobs.length;
-    store.jobs = store.jobs.filter((j) => j.id !== id);
-
-    if (store.jobs.length < initialLength) {
-      this.save(store);
-      return true;
-    }
-    return false;
+    return this.mutateStore((store) => {
+      const initialLength = store.jobs.length;
+      store.jobs = store.jobs.filter((job) => job.id !== id);
+      return store.jobs.length < initialLength;
+    });
   }
 
-  /**
-   * Update a job by ID
-   */
   updateJob(id: string, partial: Partial<CronJob>): boolean {
-    const store = this.load();
-    const job = store.jobs.find((j) => j.id === id);
-
-    if (job) {
+    return this.mutateStore((store) => {
+      const job = store.jobs.find((candidate) => candidate.id === id);
+      if (!job) return false;
+      if (partial.name && store.jobs.some((candidate) => candidate.id !== id && candidate.name === partial.name)) {
+        throw new DuplicateJobNameError(partial.name);
+      }
       Object.assign(job, partial);
-      this.save(store);
       return true;
-    }
-    return false;
+    });
   }
 
-  /**
-   * Get a single job by ID
-   */
   getJob(id: string): CronJob | undefined {
-    const store = this.load();
-    return store.jobs.find((j) => j.id === id);
+    return this.load().jobs.find((job) => job.id === id);
   }
 
-  /**
-   * Get all jobs
-   */
   getAllJobs(): CronJob[] {
-    const store = this.load();
-    return store.jobs;
+    return this.load().jobs;
   }
 
-  /**
-   * Get storage file path
-   */
   getStorePath(): string {
     return this.storePath;
   }

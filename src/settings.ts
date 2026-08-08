@@ -5,8 +5,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME } from "./scope.js";
 
-export type JobScope = "session" | "workdir";
+export type JobScope = "session" | "workdir" | "global";
 
 export interface ScheduleSettings {
   /** Default true. Project file overrides global. */
@@ -14,7 +15,8 @@ export interface ScheduleSettings {
   /**
    * Default scope for newly-created jobs. `"session"` (default) writes
    * `session: <currentSessionId>` so only the creating pi fires the job;
-   * `"workdir"` omits the field so every pi in this cwd fires it.
+   * `"workdir"` omits the field so every pi in this cwd fires it;
+   * `"global"` stores the job under the user agent directory.
    */
   defaultJobScope?: JobScope;
 }
@@ -26,7 +28,7 @@ function sanitize(raw: unknown): ScheduleSettings {
   const r = raw as Record<string, unknown>;
   const out: ScheduleSettings = {};
   if (typeof r.widgetVisible === "boolean") out.widgetVisible = r.widgetVisible;
-  if (r.defaultJobScope === "session" || r.defaultJobScope === "workdir") {
+  if (r.defaultJobScope === "session" || r.defaultJobScope === "workdir" || r.defaultJobScope === "global") {
     out.defaultJobScope = r.defaultJobScope;
   }
   return out;
@@ -44,7 +46,7 @@ function read(path: string): ScheduleSettings {
 }
 
 export function loadSettings(cwd: string): ScheduleSettings {
-  return { ...read(join(getAgentDir(), FILE)), ...read(join(cwd, ".pi", FILE)) };
+  return { ...read(join(getAgentDir(), FILE)), ...read(join(cwd, CONFIG_DIR_NAME, FILE)) };
 }
 
 /**

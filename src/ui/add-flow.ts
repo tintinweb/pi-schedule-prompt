@@ -1,54 +1,37 @@
-/**
- * Interactive add flow for `/schedule-prompt`.
- * Steps the user through name → type → schedule (with re-prompt on validation
- * failure) → prompt → scope → confirm. Saves and schedules the new job, or
- * returns silently on cancellation.
- */
-
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
+import type { CronJobManager } from "../manager.js";
 import { CronScheduler } from "../scheduler.js";
-import type { ScheduleSettings } from "../settings.js";
+import type { JobScope, ScheduleSettings } from "../settings.js";
 import type { CronStorage } from "../storage.js";
 import type { CronJob } from "../types.js";
 
 export async function runAddFlow(
   ctx: ExtensionCommandContext,
-  storage: CronStorage,
-  scheduler: CronScheduler,
-  settings: ScheduleSettings,
-  mySessionId: string | undefined,
+  managerOrStorage: CronJobManager | CronStorage,
+  schedulerOrSettings: CronScheduler | ScheduleSettings,
+  settingsOrSession: ScheduleSettings | string | undefined,
+  mySessionId?: string,
 ): Promise<void> {
+  const manager = "addJob" in managerOrStorage && "projectStorage" in managerOrStorage
+    ? managerOrStorage as CronJobManager
+    : undefined;
+  const storage = manager ? undefined : managerOrStorage as CronStorage;
+  const scheduler = manager ? undefined : schedulerOrSettings as CronScheduler;
+  const settings = (manager ? schedulerOrSettings : settingsOrSession) as ScheduleSettings;
+  const sessionId = manager ? settingsOrSession as string | undefined : mySessionId;
+
   const name = await ctx.ui.input("Job Name", "Enter a name for this scheduled prompt");
   if (!name) return;
-
-  if (storage.hasJobWithName(name)) {
+  if (storage?.hasJobWithName(name)) {
     ctx.ui.notify(`A job named "${name}" already exists`, "error");
     return;
   }
-
-  const typeChoice = await ctx.ui.select("Job Type", [
-    "Cron (recurring)",
-    "Once (one-shot)",
-    "Interval (periodic)",
-  ]);
+  const typeChoice = await ctx.ui.select("Job Type", ["Cron (recurring)", "Once (one-shot)", "Interval (periodic)"]);
   if (!typeChoice) return;
-
-  const typeMap: Record<string, "cron" | "once" | "interval"> = {
-    "Cron (recurring)": "cron",
-    "Once (one-shot)": "once",
-    "Interval (periodic)": "interval",
-  };
+  const typeMap: Record<string, CronJob["type"]> = { "Cron (recurring)": "cron", "Once (one-shot)": "once", "Interval (periodic)": "interval" };
   const jobType = typeMap[typeChoice];
-
-  const placeholders: Record<string, string> = {
-    cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily",
-    once: "ISO timestamp or relative time (+10s, +5m, +1h)",
-    interval: "Duration, e.g. '5m', '1h', '30s'",
-  };
-
-  // Re-prompt the schedule field on validation failure so the user
-  // doesn't lose name/type and have to start over from the menu.
+  const placeholders = { cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily", once: "ISO timestamp or relative time (+10s, +5m, +1h)", interval: "Duration, e.g. '5m', '1h', '30s'" };
   let schedule: string | undefined;
   let intervalMs: number | undefined;
   let placeholder = placeholders[jobType];
@@ -56,52 +39,26 @@ export async function runAddFlow(
     const raw = await ctx.ui.input("Schedule", placeholder);
     if (!raw) return;
     const result = CronScheduler.validateSchedule(jobType, raw.trim());
-    if (result.ok) {
-      schedule = result.schedule;
-      intervalMs = result.intervalMs;
-      break;
-    }
+    if (result.ok) { schedule = result.schedule; intervalMs = result.intervalMs; break; }
     placeholder = result.error;
   }
-
   const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
   if (!prompt) return;
-
-  // Last decision before save. Default option is listed first, picked up
-  // from the global `defaultJobScope` setting — so hitting enter takes the
-  // configured default.
-  const defaultIsSession = (settings.defaultJobScope ?? "session") === "session";
-  const SCOPE_SESSION = "Bind to this session — only this pi fires it";
-  const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
-  const scopeChoice = await ctx.ui.select(
-    "Scope",
-    defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED] : [SCOPE_SHARED, SCOPE_SESSION],
-  );
+  const SCOPE_SESSION = "Bind to this session — only this Pi session fires it";
+  const SCOPE_WORKDIR = "Share in this workdir — eligible Pis in this cwd may fire it";
+  const SCOPE_GLOBAL = "Global — one eligible Pi process fires it; stored for all projects";
+  const defaultScope = (settings?.defaultJobScope ?? "session") as JobScope;
+  const options = [SCOPE_SESSION, SCOPE_WORKDIR, SCOPE_GLOBAL];
+  const ordered = ["session", "workdir", "global"].map((scope) => options[["session", "workdir", "global"].indexOf(scope)]).filter((_, index) => ["session", "workdir", "global"].indexOf(defaultScope) === index || true);
+  const scopeChoice = await ctx.ui.select("Scope", [options[["session", "workdir", "global"].indexOf(defaultScope)], ...ordered.filter((item) => item !== options[["session", "workdir", "global"].indexOf(defaultScope)])]);
   if (!scopeChoice) return;
-  const session = scopeChoice === SCOPE_SESSION ? mySessionId : undefined;
-
+  const scope: JobScope = scopeChoice === SCOPE_SESSION ? "session" : scopeChoice === SCOPE_WORKDIR ? "workdir" : "global";
+  const cwd = scope === "global" ? ctx.cwd : undefined;
   const human = CronScheduler.describeSchedule(jobType, schedule);
-  const scopeLabel = session ? "session-bound" : "shared (any pi here)";
-  const confirmed = await ctx.ui.confirm(
-    "Confirm",
-    `Save "${name}"?\nSchedule: ${human}\nScope: ${scopeLabel}\nPrompt: ${prompt}`,
-  );
+  const confirmed = await ctx.ui.confirm("Confirm", `Save "${name}"?\nSchedule: ${human}\nScope: ${scope}${cwd ? `\nCreator cwd: ${cwd}` : ""}\nPrompt: ${prompt}`);
   if (!confirmed) return;
-
-  const job: CronJob = {
-    id: nanoid(10),
-    name,
-    schedule,
-    prompt,
-    enabled: true,
-    type: jobType,
-    intervalMs,
-    createdAt: new Date().toISOString(),
-    runCount: 0,
-    session,
-  };
-
-  storage.addJob(job);
-  scheduler.addJob(job);
+  const job: CronJob = { id: nanoid(10), name, schedule, prompt, enabled: true, type: jobType, intervalMs, createdAt: new Date().toISOString(), runCount: 0, scope, session: scope === "session" ? sessionId : undefined, cwd };
+  if (manager) manager.addJob(job);
+  else { storage!.addJob(job); scheduler!.addJob(job); }
   ctx.ui.notify(`Created scheduled prompt: ${name} (${human})`, "info");
 }

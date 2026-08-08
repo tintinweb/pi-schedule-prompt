@@ -1,4 +1,5 @@
 import { type Static, StringEnum, Type } from "@earendil-works/pi-ai";
+import type { JobScope } from "./settings.js";
 
 /**
  * Type of cron job
@@ -48,7 +49,11 @@ export interface CronJob {
   extensions?: boolean | string[];
   /** Subagent jobs only. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
-  /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
+  /** Explicit scope. Legacy local jobs infer scope from `session`. */
+  scope?: JobScope;
+  /** Absolute creator cwd for global jobs. */
+  cwd?: string;
+  /** Session id this job is bound to. */
   session?: string;
 }
 
@@ -141,6 +146,11 @@ export const CronToolParams = Type.Object({
         description: "List of skill names to load.",
       }),
     ])
+  ),
+  scope: Type.Optional(
+    StringEnum(["session", "workdir", "global"], {
+      description: "Job scope. Global jobs are shared across Pi sessions and require an open eligible Pi process.",
+    })
   ),
 });
 

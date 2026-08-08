@@ -25,6 +25,8 @@ export type SubagentResult =
   | { ok: false; error: string };
 
 export interface RunSubagentOptions {
+  /** Working directory for the subagent. Defaults to parent context cwd. */
+  cwd?: string;
   /** If true, load all extensions. If an array, only those named. Default undefined (none). */
   extensions?: boolean | string[];
   /** If true, load all skills. If an array, only those named. Default undefined (none). */
@@ -103,6 +105,7 @@ export async function runSubagentOnce(
       };
     }
 
+    const runCwd = options.cwd ?? ctx.cwd;
     const agentDir = getAgentDir();
 
     // Helper: convert extensions/skills option to boolean and optionally filter.
@@ -116,7 +119,7 @@ export async function runSubagentOnce(
     const skillList = getNameList(options.skills);
 
     const loader = new DefaultResourceLoader({
-      cwd: ctx.cwd,
+      cwd: runCwd,
       agentDir,
       // Prevent recursive loading of this extension into the subagent.
       // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
@@ -144,10 +147,10 @@ export async function runSubagentOnce(
     await loader.reload();
 
     const { session } = await createAgentSession({
-      cwd: ctx.cwd,
+      cwd: runCwd,
       agentDir,
-      sessionManager: SessionManager.inMemory(ctx.cwd),
-      settingsManager: SettingsManager.create(ctx.cwd, agentDir),
+      sessionManager: SessionManager.inMemory(runCwd),
+      settingsManager: SettingsManager.create(runCwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
       tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,

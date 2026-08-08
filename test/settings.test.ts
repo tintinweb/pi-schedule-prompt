@@ -36,6 +36,11 @@ describe("ScheduleSettings — sanitize", () => {
     expect(loadSettings(cwd).defaultJobScope).toBe("workdir");
   });
 
+  it("accepts defaultJobScope='global'", () => {
+    writeProjectSettings({ defaultJobScope: "global" });
+    expect(loadSettings(cwd).defaultJobScope).toBe("global");
+  });
+
   it("drops a typo'd defaultJobScope value (no garbage propagates)", () => {
     writeProjectSettings({ defaultJobScope: "sesssion" });
     expect(loadSettings(cwd).defaultJobScope).toBeUndefined();
