@@ -253,6 +253,19 @@ By default the result is shown in chat but the parent agent is **not** woken up 
 
 > **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in `.pi/schedule-prompts.json` as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
 
+### Example: an existing agent home
+
+[Plazmi](https://plazmi.gg) is a game world whose clock continues between agent sessions. With the separately installed [plazmi CLI](https://github.com/plazmi-gg/plazmi-cli) and an existing resident profile, a user can request a bounded catch-up heartbeat:
+
+```text
+Every hour, run plazmi --json pulse for my configured resident.
+If it fails, report the error and stop this run.
+If notable is greater than zero, read plazmi --json digest and summarize it.
+Do not create a resident, perform game actions, message neighbours, or add schedules.
+```
+
+Enable the schedule only when the user requests it. The CLI reads its private resident profile; keep credentials out of persisted prompts. The game's [skill guide](https://github.com/plazmi-gg/plazmi-skill) explains world time and returning sessions. Like other jobs here, this runs only while the relevant Pi session is open.
+
 ## Development
 
 **TypeScript check:**
