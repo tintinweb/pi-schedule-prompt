@@ -127,8 +127,8 @@ export class JobsView implements Component {
     }
     if (matchesKey(data, "s")) {
       // Toggle this job's binding: session-bound ↔ shared. Other pi sessions
-      // already running in this cwd won't see the change until they restart;
-      // their in-memory schedulers are stale until session_start.
+      // already running against this agent dir won't see the change until they
+      // restart; their in-memory schedulers are stale until session_start.
       if (this.isSelectionForeign()) return;
       const session = sel.session ? undefined : this.mySessionId;
       this.storage.updateJob(sel.id, { session });

@@ -1,20 +1,26 @@
 // Persistence for pi-schedule-prompt settings.
-// - Global:  ~/.pi/agent/schedule-prompts-settings.json — manual user defaults, never written here
-// - Project: <cwd>/.pi/schedule-prompts-settings.json — written by the UI; overrides global on load
+// Settings live in the active pi agent directory (`getAgentDir()`, which honors
+// PI_CODING_AGENT_DIR) so they are scoped per profile and do not collide with
+// other profiles sharing a working directory. A legacy project-local
+// <cwd>/.pi file is migrated once on first load.
+//
+// The cwd argument is kept on the public API so callers do not change; it is
+// only used to find the legacy file.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type JobScope = "session" | "workdir";
 
 export interface ScheduleSettings {
-  /** Default true. Project file overrides global. */
+  /** Default true. */
   widgetVisible?: boolean;
   /**
    * Default scope for newly-created jobs. `"session"` (default) writes
    * `session: <currentSessionId>` so only the creating pi fires the job;
-   * `"workdir"` omits the field so every pi in this cwd fires it.
+   * `"workdir"` omits the field so every pi session using this agent dir fires
+   * it. The value name is historical; the store is now agent-scoped.
    */
   defaultJobScope?: JobScope;
 }
@@ -44,19 +50,36 @@ function read(path: string): ScheduleSettings {
 }
 
 export function loadSettings(cwd: string): ScheduleSettings {
-  return { ...read(join(getAgentDir(), FILE)), ...read(join(cwd, ".pi", FILE)) };
+  const agentPath = join(getAgentDir(), FILE);
+  const legacyPath = join(cwd, ".pi", FILE);
+
+  if (!existsSync(agentPath) && existsSync(legacyPath)) {
+    try {
+      mkdirSync(dirname(agentPath), { recursive: true });
+      copyFileSync(legacyPath, agentPath);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[pi-schedule-prompt] Could not migrate legacy settings from ${legacyPath}: ${reason}`,
+      );
+    }
+  }
+
+  return read(agentPath);
 }
 
 /**
- * Apply a partial update to the project settings file. Reads the *project*
- * file (not the merged in-memory state), spreads `change` over it, writes
- * back. This way the project file only ever contains deliberate overrides,
- * so global defaults bleed through correctly when the user later edits them.
+ * Apply a partial update to the agent-dir settings file. Reads the current
+ * agent file (not the merged in-memory state), spreads `change` over it, and
+ * writes it back, so a toggle only persists the field it changed.
  *
- * Returns false on IO failure so the caller can surface a "session only" toast.
+ * `loadSettings` is called first to migrate any legacy project-local file before
+ * a partial write could shadow it.
  */
 export function saveSettings(cwd: string, change: Partial<ScheduleSettings>): boolean {
-  const path = join(cwd, ".pi", FILE);
+  loadSettings(cwd);
+
+  const path = join(getAgentDir(), FILE);
   try {
     const merged = { ...read(path), ...change };
     mkdirSync(dirname(path), { recursive: true });

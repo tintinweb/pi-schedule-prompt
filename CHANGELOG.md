@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Job data and settings moved from `<cwd>/.pi` to the active pi agent directory (`getAgentDir()`): `<agentDir>/schedule-prompts.json` and `<agentDir>/schedule-prompts-settings.json`. This respects `PI_CODING_AGENT_DIR` and scopes storage per pi profile, so profiles with different config dirs no longer share one store. Legacy `<cwd>/.pi` files are migrated once on first load. The `workdir` job scope now means "every pi session using this agent dir"; the value name is unchanged for compatibility.
+
+### Fixed
+- `pi-schedule-prompt` now honors `PI_CODING_AGENT_DIR` instead of writing jobs and settings under `<cwd>/.pi`.
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

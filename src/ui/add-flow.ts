@@ -72,7 +72,7 @@ export async function runAddFlow(
   // configured default.
   const defaultIsSession = (settings.defaultJobScope ?? "session") === "session";
   const SCOPE_SESSION = "Bind to this session — only this pi fires it";
-  const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
+  const SCOPE_SHARED = "Shared — every pi session using this agent dir fires it (accepts duplicate fires)";
   const scopeChoice = await ctx.ui.select(
     "Scope",
     defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED] : [SCOPE_SHARED, SCOPE_SESSION],

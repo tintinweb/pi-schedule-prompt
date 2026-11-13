@@ -107,7 +107,7 @@ The widget displays below your editor (only when jobs exist):
 
 `/schedule-prompt` opens a two-item menu:
 
-- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this cwd), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
+- **Jobs** — full-screen overlay listing every scheduled prompt for this agent profile. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions using this agent dir), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
 - **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
@@ -161,16 +161,18 @@ The tool accepts multiple time formats:
 
 **Storage:**
 
-- Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
-- Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
+- Job data: `<agentDir>/schedule-prompts.json` — the active pi agent directory (`getAgentDir()`, which respects `PI_CODING_AGENT_DIR`), scoped per profile. A legacy `<cwd>/.pi/schedule-prompts.json` is migrated once on first load.
+- Settings: `<agentDir>/schedule-prompts-settings.json` — same directory. A legacy `<cwd>/.pi/schedule-prompts-settings.json` is migrated once on first load.
+
+`<agentDir>` is `~/.pi/agent` by default, or the directory selected by `PI_CODING_AGENT_DIR`. Using the agent dir keeps parallel agents with different config dirs isolated.
 
 **Job binding:**
 
-By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi in this cwd (useful for hand-edited project-wide cron), remove its `session` field from `<cwd>/.pi/schedule-prompts.json`.
+By default a job fires only in the session that created it — opening two pi sessions for the same profile won't double-fire schedules. To make a job fire in every pi session using this agent dir (useful for hand-edited profile-wide cron), remove its `session` field from `<agentDir>/schedule-prompts.json`. The setting value remains `workdir` for compatibility.
 
 Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
 
-**Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
+**Heads up:** schedules only fire while a pi session using this agent dir is open; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 
 **Scheduler:**
 
@@ -197,7 +199,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 - Shows: status icon, name, schedule (human-readable), prompt (truncated), next run, last run, run count
 - Human-readable formatting: "every minute", "daily", "Feb 13 15:30" instead of raw cron/ISO
 - Auto-refreshes every 30 seconds
-- Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<cwd>/.pi/schedule-prompts-settings.json`, with `~/.pi/agent/schedule-prompts-settings.json` as the global default
+- Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<agentDir>/schedule-prompts-settings.json`
 - Status icons: `✓` enabled, `✗` disabled, `⟳` running, `!` error
 
 ## Examples
@@ -251,7 +253,7 @@ By default a scheduled prompt is injected into your current chat. Set `model` on
 
 By default the result is shown in chat but the parent agent is **not** woken up — you read it, the agent isn't interrupted. Set `notify: true` on the job if you want the parent to react to each completion (e.g. for autonomous workflows). Recommended only for low-frequency jobs; a `notify: true` recurring job that fires every 5 minutes will trigger a parent-agent turn every 5 minutes.
 
-> **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in `.pi/schedule-prompts.json` as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
+> **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in `<agentDir>/schedule-prompts.json` as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
 
 ## Development
 
@@ -278,8 +280,8 @@ pi -e ./src/index.ts
 ```
 src/
   types.ts          # CronJob, CronJobType, CronToolParams
-  storage.ts        # Job persistence (.pi/schedule-prompts.json)
-  settings.ts       # Settings persistence (global + project, project overrides)
+  storage.ts        # Job persistence (agent-dir schedule-prompts.json)
+  settings.ts       # Settings persistence (agent dir; legacy migration)
   scheduler.ts      # Core scheduling engine with croner
   subagent.ts       # Lightweight in-process agent runner (per-task model)
   tool.ts           # schedule_prompt tool definition
