@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-16
+
 ### Added
-- `idle` job type: `schedule` is a duration (`10m`, `1h`). The job fires once after the user has been inactive that long, as soon as the agent is idle, then waits for new user activity (a message, `!` command or abort) before it can fire again. Idle is tracked with pi's `agent_settled` event, so retries, compaction retries and queued follow-ups count as busy. The clock measures user inactivity: it restarts after your own turns, aborts, `!` commands and closed dialogs, not after scheduled turns, so frequent scheduled jobs can't starve it. Open dialogs pause it. Its own scheduled turn never re-arms it, and the widget shows a countdown while it is armed. Works with `model` (subagent) like other job types ([#21](https://github.com/tintinweb/pi-schedule-prompt/issues/21)).
+- `idle` job type: `schedule` is a duration (`10m`, `1h`). The job fires once after the user has been inactive that long, as soon as the agent is idle, then waits for new user activity (a message, `!` command or abort) before it can fire again. Idle is tracked with pi's `agent_settled` event, so retries, compaction retries and queued follow-ups count as busy; if pi is busy without a run (e.g. a manual `/compact`), a due job re-checks every 5s. The clock measures user inactivity: it restarts after your own turns, aborts, `!` commands and closed dialogs, not after scheduled turns, so frequent scheduled jobs can't starve it. Question dialogs (select, confirm, input, editor) pause it; overlays don't, so a long-lived panel can't block idle jobs. In the Jobs view each key press restarts the clock and the add flow pauses it. Its own scheduled turn, or an edit to it, never re-arms it; a job added or re-enabled waits its full duration. The widget shows a countdown while it is armed. Works with `model` like other job types ([#21](https://github.com/tintinweb/pi-schedule-prompt/issues/21)).
+
+### Changed
+- `schedule_prompt` tool and parameter descriptions rewritten. Weaker models called the tool with `type: "once"`, `schedule: "+1s"` and a `model` to spawn parallel workers; the description now leads with when to use it (a time or user-inactivity trigger) and says to do immediate work directly. It also states rules the model was never told: `type` must match the schedule format, units and limits, how a fired prompt is delivered, what a `model` job's separate session can see, the recursion guard, what `update` and `cleanup` do, and that `type` cannot be updated. Model-visible results and errors say "separate session" instead of "subagent". Based on [#20](https://github.com/tintinweb/pi-schedule-prompt/pull/20) by @brycelelbach.
+
+### Fixed
+- `update` rejects renaming a job to a name another job already has, matching `add`.
 
 ## [0.5.0] - 2026-11-16
 
