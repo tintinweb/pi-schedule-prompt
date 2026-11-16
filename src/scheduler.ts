@@ -238,8 +238,15 @@ export class CronScheduler {
     this.rearmIdleJobs();
   }
 
-  /** A blocking dialog opened: the user is at the keyboard, so pause. */
-  onPromptStart(): void {
+  /**
+   * A blocking dialog opened. A question dialog (select/confirm/input/editor)
+   * means the user is at the keyboard, so pause. A `custom` overlay doesn't
+   * pause: it can stay open indefinitely (this extension's own Jobs view, or
+   * another extension's panel) and would otherwise freeze idle jobs. pi
+   * reports dialogs nested in an overlay as part of the overlay.
+   */
+  onPromptStart(kind?: string): void {
+    if (kind === "custom") return;
     this.promptOpen = true;
     this.disarmIdleJobs();
   }

@@ -221,8 +221,8 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // Blocking dialogs, including this extension's own /schedule-prompt menus.
-  pi.on("ui_prompt_start", async () => {
-    scheduler?.onPromptStart();
+  pi.on("ui_prompt_start", async (event) => {
+    scheduler?.onPromptStart(event.kind);
   });
 
   pi.on("ui_prompt_end", async () => {

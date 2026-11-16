@@ -584,6 +584,19 @@ describe("CronScheduler — idle scheduling", () => {
     scheduler.stop();
   });
 
+  it("an open custom overlay (e.g. the Jobs view) doesn't pause the clock", () => {
+    const { pi, storage, scheduler } = setup([]);
+    scheduler.start();
+    scheduler.onPromptStart("custom");
+    const job = idleJob({ schedule: "30s", intervalMs: 30_000 });
+    storage.addJob(job);
+    scheduler.addJob(job); // added from inside the overlay
+    vi.advanceTimersByTime(30_000);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.onPromptEnd();
+    scheduler.stop();
+  });
+
   it("closing a dialog restarts the clock but doesn't let a fired job fire again", () => {
     const { pi, scheduler } = setup();
     scheduler.start();
@@ -636,7 +649,7 @@ describe("CronScheduler — idle scheduling", () => {
     const { pi, scheduler } = setup();
     scheduler.start();
     vi.advanceTimersByTime(5 * MIN);
-    scheduler.onPromptStart();
+    scheduler.onPromptStart("select");
     vi.advanceTimersByTime(30 * MIN);
     expect(pi.sendUserMessage).not.toHaveBeenCalled();
     scheduler.onPromptEnd();
