@@ -70,15 +70,20 @@ pi install npm:pi-schedule-prompt
 **Option B — Load directly (dev):**
 
 ```bash
-pi -e ~/projects/pi-cron-schedule/src/index.ts
+npm --prefix /path/to/pi-schedule-prompt install
+pi -e /path/to/pi-schedule-prompt/src/index.ts
 ```
 
 **Option C — Install from local folder:**
 
 ```bash
-pi install ~/projects/pi-cron-schedule
+cd /path/to/pi-schedule-prompt
+npm install
+pi install .
 ```
 
+Pi does not install dependencies for local-path packages. Run `npm install` in the
+package directory before loading it, and again whenever its dependencies change.
 Then run `pi` normally; the extension auto-discovers.
 
 ## Usage
