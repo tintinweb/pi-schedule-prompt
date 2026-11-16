@@ -14,10 +14,12 @@ import {
   DefaultResourceLoader,
   type ExtensionContext,
   getAgentDir,
+  type ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
+const ABORTED_BEFORE_START = "Subagent aborted before it started";
 const DEFAULT_TOOL_NAMES = ["bash", "read", "edit", "write", "grep", "find", "ls"];
 
 export type SubagentResult =
@@ -75,6 +77,95 @@ export function getLastAssistantText(session: AgentSession): string {
     if (text) return text;
   }
   return "";
+}
+
+let warnedNoParentRuntime = false;
+
+/**
+ * The parent session's ModelRuntime, so the subagent sees the same providers
+ * (including ones registered by other extensions) and runtime API keys.
+ *
+ * pi >=0.80.8 replaced `createAgentSession({ modelRegistry })` with
+ * `modelRuntime` and exposes no public accessor for it. `ModelRegistry` wraps
+ * the session's runtime in a field that is private only in the TypeScript
+ * types (`new ModelRegistry(this._modelRuntime)` in pi's AgentSession), so we
+ * read it there. Returns undefined (and warns once) if pi ever renames the
+ * field, in which case pi builds a fresh default runtime for the subagent.
+ */
+export function parentModelRuntime(ctx: ExtensionContext): ModelRuntime | undefined {
+  const rt = (ctx.modelRegistry as unknown as { runtime?: Partial<ModelRuntime> }).runtime;
+  const looksLikeRuntime =
+    typeof rt?.getAuth === "function" &&
+    typeof rt.getModel === "function" &&
+    typeof rt.hasConfiguredAuth === "function" &&
+    typeof rt.registerProvider === "function";
+  if (looksLikeRuntime) return rt as ModelRuntime;
+  if (!warnedNoParentRuntime) {
+    warnedNoParentRuntime = true;
+    console.warn(
+      "[pi-schedule-prompt] Could not reach the parent session's model runtime; subagent jobs " +
+        "fall back to pi's default runtime (auth.json/models.json). Providers registered by " +
+        "other extensions and runtime-only API keys will be unavailable to subagents.",
+    );
+  }
+  return undefined;
+}
+
+/** Upper bound for each teardown step, so a hung abort or extension shutdown can't wedge the job. */
+const TEARDOWN_STEP_TIMEOUT_MS = 5_000;
+
+/** Resolve when `p` settles or after `ms`, whichever comes first. Never rejects. */
+async function settleWithin(p: Promise<unknown>, ms: number, what: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+  });
+  try {
+    const outcome = await Promise.race([p.then(() => "ok" as const), timeout]);
+    if (outcome === "timeout") {
+      console.warn(`[pi-schedule-prompt] Subagent ${what} did not finish within ${ms}ms; continuing teardown.`);
+    }
+  } catch (err) {
+    console.warn(`[pi-schedule-prompt] Subagent ${what} failed:`, err);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Tear a finished subagent session down the way pi tears down its own
+ * sessions (AgentSessionRuntime.teardownCurrent): settle any in-flight run,
+ * let loaded extensions run their `session_shutdown` handlers (MCP servers,
+ * child processes, timers), then dispose. `dispose()` alone does not emit
+ * `session_shutdown`. The shutdown emit mirrors pi's internal
+ * `emitSessionShutdownEvent` (hasHandlers + emit), which pi does not export.
+ * Each awaited step is time-bounded and the function never throws, so a
+ * successful run's result is always returned.
+ */
+async function teardownSubagentSession(
+  session: AgentSession,
+  extensionsLoaded: boolean,
+): Promise<void> {
+  await settleWithin(session.abort(), TEARDOWN_STEP_TIMEOUT_MS, "abort");
+  if (extensionsLoaded) {
+    try {
+      const runner = session.extensionRunner;
+      if (runner.hasHandlers("session_shutdown")) {
+        await settleWithin(
+          runner.emit({ type: "session_shutdown", reason: "quit" }),
+          TEARDOWN_STEP_TIMEOUT_MS,
+          "extension shutdown",
+        );
+      }
+    } catch (err) {
+      console.warn("[pi-schedule-prompt] Subagent extension shutdown failed:", err);
+    }
+  }
+  try {
+    session.dispose();
+  } catch (err) {
+    console.warn("[pi-schedule-prompt] Subagent session dispose failed:", err);
+  }
 }
 
 export function describeAvailableModels(
@@ -141,55 +232,71 @@ export async function runSubagentOnce(
         }),
       }),
     });
+    // Skip setup once aborted (e.g. scheduler stopped mid-setup): aborting an
+    // idle session records nothing, so prompt() would otherwise still run.
+    if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
     await loader.reload();
+    if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
 
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
       agentDir,
       sessionManager: SessionManager.inMemory(ctx.cwd),
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
-      modelRegistry: ctx.modelRegistry,
+      // Share the parent's runtime only when the subagent loads no extensions:
+      // extension provider (un)registrations write into whatever runtime the
+      // session holds, so a shared one would let subagent extensions rewrite
+      // the parent's providers. With extensions loaded, the subagent gets pi's
+      // default runtime and its extensions register their own providers.
+      // undefined → pi builds its default runtime from agentDir's auth.json/models.json.
+      modelRuntime: isEnabled(options.extensions) ? undefined : parentModelRuntime(ctx),
       model,
       tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
-    if (isEnabled(options.extensions)) {
-      await session.bindExtensions({});
-    }
     let onAbort: (() => void) | undefined;
-    if (signal) {
-      if (signal.aborted) {
-        session.abort();
-      } else {
-        onAbort = () => session.abort();
+    let unsubscribe: (() => void) | undefined;
+    try {
+      // Checked before bindExtensions so an aborted job doesn't start (and
+      // then shut down) its extensions. Teardown runs in finally.
+      if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
+      if (isEnabled(options.extensions)) {
+        await session.bindExtensions({});
+      }
+      if (signal) {
+        if (signal.aborted) return { ok: false, error: ABORTED_BEFORE_START };
+        onAbort = () => {
+          session.abort().catch(() => {});
+        };
         signal.addEventListener("abort", onAbort, { once: true });
       }
-    }
 
-    let buffered = "";
-    const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-      if (event.type === "message_start") {
-        buffered = "";
-      } else if (
-        event.type === "message_update" &&
-        event.assistantMessageEvent.type === "text_delta"
-      ) {
-        buffered += event.assistantMessageEvent.delta;
-      }
-    });
+      let buffered = "";
+      unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+        if (event.type === "message_start") {
+          buffered = "";
+        } else if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          buffered += event.assistantMessageEvent.delta;
+        }
+      });
 
-    try {
       await session.prompt(prompt);
+      // An abort mid-run makes prompt() resolve normally with partial text.
+      if (signal?.aborted) return { ok: false, error: "Subagent aborted" };
+
+      const text = buffered.trim() || getLastAssistantText(session);
+      return { ok: true, text };
     } finally {
-      unsubscribe();
+      unsubscribe?.();
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
       }
+      await teardownSubagentSession(session, isEnabled(options.extensions));
     }
-
-    const text = buffered.trim() || getLastAssistantText(session);
-    return { ok: true, text };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

@@ -204,11 +204,16 @@ describe("runSubagentOnce", () => {
 
   function makeFakeSession() {
     return {
-      abort: vi.fn(),
+      abort: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => vi.fn()),
       prompt: vi.fn().mockResolvedValue(undefined),
       messages: [],
       bindExtensions: vi.fn(),
+      dispose: vi.fn(),
+      extensionRunner: {
+        hasHandlers: vi.fn(() => true),
+        emit: vi.fn().mockResolvedValue(undefined),
+      },
     };
   }
 
@@ -404,5 +409,190 @@ describe("runSubagentOnce", () => {
     expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
 
     expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("passes the parent session's ModelRuntime (pi >=0.80.8 ignores modelRegistry)", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const parentRuntime = {
+      getAuth: vi.fn(),
+      getModel: vi.fn(),
+      hasConfiguredAuth: vi.fn(),
+      registerProvider: vi.fn(),
+    };
+    const ctx = makeCtx();
+    ctx.modelRegistry.runtime = parentRuntime;
+
+    const result = await runSubagentOnce(ctx, "test prompt", MODELS[0].id);
+
+    expect(result.ok).toBe(true);
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.modelRuntime).toBe(parentRuntime);
+    expect(sessionOptions).not.toHaveProperty("modelRegistry");
+  });
+
+  it("leaves modelRuntime undefined when the registry exposes no runtime, so pi builds its default", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(result.ok).toBe(true);
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.modelRuntime).toBeUndefined();
+    expect(sessionOptions).not.toHaveProperty("modelRegistry");
+  });
+
+  it("does not share the parent runtime when extensions are loaded", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const ctx = makeCtx();
+    ctx.modelRegistry.runtime = {
+      getAuth: vi.fn(),
+      getModel: vi.fn(),
+      hasConfiguredAuth: vi.fn(),
+      registerProvider: vi.fn(),
+    };
+
+    const result = await runSubagentOnce(ctx, "test prompt", MODELS[0].id, undefined, {
+      extensions: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockCreateAgentSession.mock.calls[0][0].modelRuntime).toBeUndefined();
+  });
+
+  it("rejects a runtime-shaped object missing core ModelRuntime methods", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const ctx = makeCtx();
+    ctx.modelRegistry.runtime = { getAuth: vi.fn() };
+
+    await runSubagentOnce(ctx, "test prompt", MODELS[0].id);
+
+    expect(mockCreateAgentSession.mock.calls[0][0].modelRuntime).toBeUndefined();
+  });
+
+  it("disposes the subagent session after a successful run", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(fakeSession.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("disposes the subagent session when the prompt throws", async () => {
+    const fakeSession = makeFakeSession();
+    fakeSession.prompt.mockRejectedValue(new Error("boom"));
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(result).toEqual({ ok: false, error: "boom" });
+    expect(fakeSession.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits session_shutdown to subagent extensions before disposing", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, { extensions: true });
+
+    expect(fakeSession.extensionRunner.emit).toHaveBeenCalledWith({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+    const emitOrder = fakeSession.extensionRunner.emit.mock.invocationCallOrder[0];
+    const disposeOrder = fakeSession.dispose.mock.invocationCallOrder[0];
+    expect(emitOrder).toBeLessThan(disposeOrder);
+  });
+
+  it("does not emit session_shutdown when no extensions are loaded", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(fakeSession.extensionRunner.emit).not.toHaveBeenCalled();
+    expect(fakeSession.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a successful result when teardown throws", async () => {
+    const fakeSession = makeFakeSession();
+    fakeSession.dispose.mockImplementation(() => {
+      throw new Error("dispose failed");
+    });
+    fakeSession.extensionRunner.emit.mockRejectedValue(new Error("shutdown failed"));
+    fakeSession.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }] as any;
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: true,
+    });
+
+    expect(result).toEqual({ ok: true, text: "done" });
+    warn.mockRestore();
+  });
+
+  it("skips the prompt when the signal is already aborted", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, controller.signal);
+
+    expect(result).toEqual({ ok: false, error: "Subagent aborted before it started" });
+    expect(mockCreateAgentSession).not.toHaveBeenCalled();
+    expect(fakeSession.prompt).not.toHaveBeenCalled();
+  });
+
+  it("does not hang when an extension's session_shutdown handler never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeSession = makeFakeSession();
+      fakeSession.extensionRunner.emit.mockReturnValue(new Promise(() => {}));
+      fakeSession.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }] as any;
+      mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const pending = runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+        extensions: true,
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(pending).resolves.toEqual({ ok: true, text: "done" });
+      expect(fakeSession.dispose).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not create a session when aborted during setup", async () => {
+    const controller = new AbortController();
+    // biome-ignore lint/complexity/useArrowFunction: used as a constructor mock
+    mockDefaultResourceLoader.mockImplementation(function () {
+      return { reload: vi.fn(async () => controller.abort()) };
+    } as any);
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, controller.signal);
+
+    expect(result).toEqual({ ok: false, error: "Subagent aborted before it started" });
+    expect(mockCreateAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("reports ok:false when aborted mid-run even though prompt() resolves", async () => {
+    const fakeSession = makeFakeSession();
+    const controller = new AbortController();
+    fakeSession.prompt.mockImplementation(async () => controller.abort());
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, controller.signal);
+
+    expect(result).toEqual({ ok: false, error: "Subagent aborted" });
+    expect(fakeSession.dispose).toHaveBeenCalledTimes(1);
   });
 });

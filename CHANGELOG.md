@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking**: peer dependency floor raised to pi `>=1.5.0` (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`); dev dependencies now test against 1.5.2. `typebox` added as a peer (pi supplies it to extensions at runtime).
+- `Type`/`Static` are imported from `typebox` again, reversing the 0.4.0 change: pi-ai 1.5 no longer re-exports TypeBox. `StringEnum` is now a local helper with the same `{ type: "string", enum }` output as pi's, because pi-ai's own export returns a pi-schema type that TypeBox's `Static` cannot infer.
+
+### Fixed
+- Subagent jobs run on the parent session's model runtime again. Since pi 0.80.8, `createAgentSession` ignores the `modelRegistry` option we passed, so each subagent built a fresh runtime from `auth.json`/`models.json` and lost providers registered by other extensions and runtime-only API keys. The runtime is now passed as `modelRuntime`, read from `ctx.modelRegistry` (pi has no public accessor); if that is unavailable, pi's default runtime is used and a one-time warning is logged. Jobs with `extensions` enabled keep a separate runtime, so subagent extensions cannot overwrite or remove the parent session's providers.
+- Subagent sessions are now torn down after each run, including on error, the same way pi tears down its own sessions: any in-flight run is settled, loaded extensions get `session_shutdown` (so e.g. MCP servers and child processes they started are stopped), then the session is disposed. Previously every fired subagent job left a live session (listeners, extension runner, cache-warmer timer, extension child processes) behind for the life of the pi process. Teardown errors are logged and never turn a successful run into a failure, and each teardown step is capped at 5s so a hung extension shutdown cannot leave a job stuck in "running".
+- A subagent job whose abort signal fired during setup no longer runs its prompt anyway: aborting an idle pi session is a no-op, so the job now returns early, before creating the session or starting its extensions. A job aborted mid-run now returns `ok: false` instead of `ok: true` with partial text.
+- Aborting a running subagent job no longer leaves `session.abort()` promises unhandled.
+- `nanoid` raised to `^5.1.16` (security advisory).
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

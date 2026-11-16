@@ -1,4 +1,22 @@
-import { type Static, StringEnum, Type } from "@earendil-works/pi-ai";
+import { type Static, Type } from "typebox";
+
+/**
+ * String enum as `{ type: "string", enum: [...] }` (Google-compatible; a union of
+ * literals would emit `anyOf`). Same implementation as the `StringEnum` pi's
+ * extension view of pi-ai provides at runtime; defined locally because pi-ai's
+ * own export (>=1.5) returns a pi-schema type that TypeBox's `Static` can't infer.
+ */
+function StringEnum<T extends readonly string[]>(
+  values: T,
+  options?: { description?: string; default?: T[number] },
+) {
+  return Type.Unsafe<T[number]>({
+    type: "string",
+    enum: [...values],
+    ...(options?.description && { description: options.description }),
+    ...(options?.default && { default: options.default }),
+  });
+}
 
 /**
  * Type of cron job

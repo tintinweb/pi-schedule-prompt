@@ -25,13 +25,14 @@
     "remind"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.74.0",
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
-    "@earendil-works/pi-tui": ">=0.74.0"
+    "@earendil-works/pi-ai": ">=1.5.0",
+    "@earendil-works/pi-coding-agent": ">=1.5.0",
+    "@earendil-works/pi-tui": ">=1.5.0",
+    "typebox": ">=1.3.0"
   },
   "dependencies": {
     "croner": "^10.0.1",
-    "nanoid": "^5.0.0"
+    "nanoid": "^5.1.16"
   },
   "scripts": {
     "build": "tsc",
@@ -44,7 +45,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "@types/node": "^25.6.0",
+    "typebox": "^1.3.27",
     "typescript": "^6.0.3",
     "vitest": "^4.0.18"
   },
