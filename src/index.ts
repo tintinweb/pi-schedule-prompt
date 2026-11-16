@@ -46,8 +46,10 @@ export default async function (pi: ExtensionAPI) {
   let scheduler: CronScheduler;
   let widget: CronWidget;
   // Subagent teardowns still running, from every scheduler this extension has
-  // created (session_start replaces the scheduler without waiting for the old
-  // one). Awaited, bounded, on session_shutdown.
+  // created. pi (>=1.5) always emits session_shutdown before replacing a
+  // session, but initializeSession also tears down defensively when a
+  // session_start arrives without one; tracking here keeps that path from
+  // dropping in-flight teardowns. Awaited, bounded, on session_shutdown.
   const pendingTeardowns = new Set<Promise<void>>();
   // Refreshed in initializeSession; mutated by Settings submenu. The tool and
   // widget read via closure so toggles take effect without re-registering.

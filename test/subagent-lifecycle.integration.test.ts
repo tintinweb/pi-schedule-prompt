@@ -135,7 +135,9 @@ describe("subagent lifecycle (real pi)", () => {
     expect(probeLog()).toEqual(["session_start", "session_shutdown_done"]);
   });
 
-  it("on quit, waits for teardown of runs from a scheduler replaced by an earlier session_start", async () => {
+  // Defensive path: pi >=1.5 always emits session_shutdown before a replacement,
+  // but the extension also handles a bare repeated session_start.
+  it("on quit, also waits for runs from a scheduler replaced by a bare repeated session_start", async () => {
     process.env.PROBE_SLOW_INPUT = "1";
     const cwd = join(dir, "cwd-restart");
     mkdirSync(join(cwd, ".pi"), { recursive: true });
