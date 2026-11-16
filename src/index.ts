@@ -87,7 +87,8 @@ export default async function (pi: ExtensionAPI) {
     // Without this, every `session_start` (fires on reload/resume/fork too, not
     // only on fresh startup) leaks a live croner timer into the event loop,
     // accumulating duplicate fires for every recurring job over time.
-    cleanupSession(ctx);
+    // Not awaited: the old runs' teardown finishes in the background.
+    void cleanupSession(ctx);
 
     settings = loadSettings(ctx.cwd);
     storage = new CronStorage(ctx.cwd);
@@ -102,17 +103,17 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  const cleanupSession = (ctx: any) => {
-    // Stop scheduler
-    if (scheduler) {
-      scheduler.stop();
-    }
+  // Returns once in-flight subagent runs have torn down their sessions.
+  const cleanupSession = (ctx: any): Promise<void> => {
+    // Stop scheduler (timers clear synchronously; subagent teardown settles later)
+    const stopped = scheduler ? scheduler.stop() : Promise.resolve();
 
     // Hide widget
     if (widget) {
       widget.hide(ctx);
       widget.destroy();
     }
+    return stopped;
   };
 
   const autoCleanupDisabledJobs = (ctx: any) => {
@@ -142,7 +143,9 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     autoCleanupDisabledJobs(ctx);
-    cleanupSession(ctx);
+    // Await subagent teardown: pi exits right after session_shutdown handlers
+    // resolve, which would orphan subagent extensions' child processes.
+    await cleanupSession(ctx);
   });
 
   // --- Register /schedule-prompt command ---

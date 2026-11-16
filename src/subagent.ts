@@ -257,12 +257,15 @@ export async function runSubagentOnce(
 
     let onAbort: (() => void) | undefined;
     let unsubscribe: (() => void) | undefined;
+    // Only extensions that got session_start may get session_shutdown.
+    let extensionsBound = false;
     try {
       // Checked before bindExtensions so an aborted job doesn't start (and
       // then shut down) its extensions. Teardown runs in finally.
       if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
       if (isEnabled(options.extensions)) {
         await session.bindExtensions({});
+        extensionsBound = true;
       }
       if (signal) {
         if (signal.aborted) return { ok: false, error: ABORTED_BEFORE_START };
@@ -284,7 +287,15 @@ export async function runSubagentOnce(
         }
       });
 
-      await session.prompt(prompt);
+      await session.prompt(prompt, {
+        // An abort during prompt preflight (input hooks, auth check) is lost:
+        // pi clears the abort flag when the run starts. Re-apply it then.
+        preflightResult: (disposition) => {
+          if (disposition === "started" && signal?.aborted) {
+            session.abort().catch(() => {});
+          }
+        },
+      });
       // An abort mid-run makes prompt() resolve normally with partial text.
       if (signal?.aborted) return { ok: false, error: "Subagent aborted" };
 
@@ -295,7 +306,7 @@ export async function runSubagentOnce(
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
       }
-      await teardownSubagentSession(session, isEnabled(options.extensions));
+      await teardownSubagentSession(session, extensionsBound);
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

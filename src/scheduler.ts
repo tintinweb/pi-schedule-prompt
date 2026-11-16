@@ -26,6 +26,8 @@ export class CronScheduler {
   private jobs = new Map<string, Cron>();
   private intervals = new Map<string, NodeJS.Timeout>();
   private activeSubagents = new Set<AbortController>();
+  /** Settles when each in-flight subagent run (including its session teardown) finishes. */
+  private inflightSubagents = new Set<Promise<void>>();
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
@@ -63,9 +65,16 @@ export class CronScheduler {
   }
 
   /**
-   * Stop all scheduled jobs
+   * Stop all scheduled jobs and abort in-flight subagent runs.
+   *
+   * Timers are cleared synchronously. The returned promise settles once every
+   * aborted subagent run has finished tearing its session down (extension
+   * `session_shutdown` handlers included; each teardown step is time-bounded).
+   * Await it on pi shutdown: pi exits the process right after `session_shutdown`
+   * handlers resolve, which would otherwise orphan subagent extensions' child
+   * processes.
    */
-  stop(): void {
+  stop(): Promise<void> {
     // Stop all cron jobs
     for (const cron of this.jobs.values()) {
       cron.stop();
@@ -84,6 +93,8 @@ export class CronScheduler {
       controller.abort();
     }
     this.activeSubagents.clear();
+
+    return Promise.allSettled([...this.inflightSubagents]).then(() => {});
   }
 
   /**
@@ -304,7 +315,7 @@ export class CronScheduler {
     const controller = new AbortController();
     this.activeSubagents.add(controller);
 
-    void (async () => {
+    const run = (async () => {
       try {
         let result: SubagentResult;
         try {
@@ -399,6 +410,8 @@ export class CronScheduler {
         console.error(`Subagent completion handler failed for job ${job.id}:`, error);
       }
     })();
+    this.inflightSubagents.add(run);
+    void run.finally(() => this.inflightSubagents.delete(run));
   }
 
   /**
