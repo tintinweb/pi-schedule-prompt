@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Aborting a running subagent job no longer leaves `session.abort()` promises unhandled.
 - `nanoid` raised to `^5.1.16` (security advisory).
 - Project files are found through pi's `CONFIG_DIR_NAME` rather than a hardcoded `.pi`, so builds that rename the config directory work.
+- One-shot jobs scheduled more than ~24.8 days ahead now fire at their scheduled time instead of immediately. They used `setTimeout`, which Node caps at 2³¹−1 ms and replaces longer delays with 1 ms; they now use `croner`, which waits in chunks of at most 30s. Pending one-shot jobs also show their next run time in the widget, jobs view and `list` output (#18).
 
 ### Security
 - Project-local files follow pi's project-trust decision (`ctx.isProjectTrusted()`), as pi's extension docs ask: the one-time import of a legacy `.pi/schedule-prompts.json` and the project settings file `.pi/schedule-prompts-settings.json` are skipped when pi does not trust the project. Jobs themselves no longer live in the repo, so a checkout cannot add jobs after the import. Limitation: pi does not count these files as trust-requiring, so a repo whose `.pi/` contains nothing else is trusted automatically, without a prompt, and its legacy file is imported. Projects with a saved "do not trust" decision, or with pi's own protected files (`.pi/settings.json`, `.pi/extensions`, …), are covered.

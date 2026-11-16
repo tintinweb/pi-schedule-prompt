@@ -176,8 +176,8 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 
 **Scheduler:**
 
-- Uses `croner` library for cron expressions
-- Native `setTimeout`/`setInterval` for intervals and one-shots
+- Uses `croner` library for cron expressions and one-shots
+- Native `setInterval` for intervals
 - Tracks: next run, last run, execution count, status (running/success/error)
 
 **Execution:**

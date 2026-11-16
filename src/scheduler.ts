@@ -12,6 +12,11 @@ type ValidateScheduleResult =
 
 const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
 
+/** Longest delay Node timers accept (2^31−1 ms, ~24.8 days). Node replaces a
+ *  longer delay with 1 ms, so an interval above this would fire every
+ *  millisecond. */
+export const MAX_INTERVAL_MS = 2_147_483_647;
+
 /** Truncate `text` to `SUBAGENT_OUTPUT_SNIPPET_LENGTH`, appending an ellipsis if cut. */
 function snippet(text: string): string {
   return text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
@@ -144,6 +149,16 @@ export class CronScheduler {
   private scheduleJob(job: CronJob): void {
     try {
       if (job.type === "interval" && job.intervalMs) {
+        // validateSchedule rejects these, but a store written by an older
+        // version or edited by hand can still hold one. Scheduling it would
+        // fire every 1 ms, so disable it instead.
+        if (job.intervalMs > MAX_INTERVAL_MS) {
+          const error = `Interval ${job.schedule} exceeds the ~24-day timer limit; use a cron expression instead`;
+          console.warn(`Job ${job.id} (${job.name}): ${error}`);
+          this.storage.updateJob(job.id, { enabled: false, lastStatus: "error" });
+          this.emitChange({ type: "error", jobId: job.id, error });
+          return;
+        }
         // Interval-based scheduling
         const interval = setInterval(() => {
           this.executeJob(job);
@@ -495,7 +510,8 @@ export class CronScheduler {
    * - `cron`: validates the 6-field expression
    * - `once`: accepts ISO timestamps and relative time (`+10s`); rejects past
    *   timestamps and ones <5s away (the agent should use relative time instead)
-   * - `interval`: accepts duration strings (`5m`, `1h`, `30s`)
+   * - `interval`: accepts duration strings (`5m`, `1h`, `30s`) up to 24 days
+   *   (`MAX_INTERVAL_MS`)
    */
   static validateSchedule(type: CronJobType, schedule: string): ValidateScheduleResult {
     if (type === "interval") {
@@ -504,6 +520,12 @@ export class CronScheduler {
         return {
           ok: false,
           error: `Invalid interval format: ${schedule}. Use format like '5m', '1h', '30s'`,
+        };
+      }
+      if (intervalMs > MAX_INTERVAL_MS) {
+        return {
+          ok: false,
+          error: `Interval ${schedule} is too long: intervals are limited to 24 days (24d). For longer or calendar-based repeats, use a cron expression (e.g. '0 0 9 1 * *' = 9am on the 1st of each month).`,
         };
       }
       return { ok: true, schedule, intervalMs };

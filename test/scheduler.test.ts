@@ -310,6 +310,33 @@ describe("CronScheduler — once scheduling", () => {
   });
 });
 
+describe("CronScheduler — interval scheduling", () => {
+  it("disables a stored interval over the timer limit instead of scheduling it", () => {
+    vi.useFakeTimers();
+    const pi = makePi();
+    const job = exampleJob({
+      id: "huge-interval",
+      type: "interval",
+      schedule: "30d",
+      intervalMs: 30 * 24 * 60 * 60 * 1000,
+    });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx());
+
+    try {
+      scheduler.start();
+      vi.advanceTimersByTime(100);
+
+      expect((scheduler as any).intervals.has("huge-interval")).toBe(false);
+      expect(storage.getJob("huge-interval")).toMatchObject({ enabled: false, lastStatus: "error" });
+      expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("CronScheduler — start() recovery", () => {
   it("clears stale lastStatus=running on start (interrupted-by-shutdown recovery)", () => {
     // Simulates the previous session crashing/aborting mid-execution: storage
@@ -601,6 +628,20 @@ describe("CronScheduler.validateSchedule", () => {
     if (r.ok) {
       expect(r.schedule).toBe("5m");
       expect(r.intervalMs).toBe(5 * 60 * 1000);
+    }
+  });
+
+  it("interval: accepts 24d, the longest whole-day interval under the timer limit", () => {
+    const r = CronScheduler.validateSchedule("interval", "24d");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.intervalMs).toBe(24 * 24 * 60 * 60 * 1000);
+  });
+
+  it("interval: rejects intervals over the ~24.8-day timer limit and points to cron", () => {
+    for (const schedule of ["25d", "30d", "597h"]) {
+      const r = CronScheduler.validateSchedule("interval", schedule);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("cron expression");
     }
   });
 
