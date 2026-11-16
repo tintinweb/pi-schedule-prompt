@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, UIPromptKind } from "@earendil-works/pi-coding-agent";
 import { Cron } from "croner";
 import type { CronStorage } from "./storage.js";
 import { runSubagentOnce, type SubagentResult } from "./subagent.js";
@@ -243,20 +243,37 @@ export class CronScheduler {
    * means the user is at the keyboard, so pause. A `custom` overlay doesn't
    * pause: it can stay open indefinitely (this extension's own Jobs view, or
    * another extension's panel) and would otherwise freeze idle jobs. pi
-   * reports dialogs nested in an overlay as part of the overlay.
+   * reports dialogs nested in an overlay as part of the overlay, so overlays
+   * that open dialogs report them with {@link pauseForDialog} themselves.
    */
-  onPromptStart(kind?: string): void {
+  onPromptStart(kind: UIPromptKind): void {
     if (kind === "custom") return;
+    this.pauseForDialog();
+  }
+
+  /** A question dialog is open: pause until {@link resumeAfterDialog}. */
+  pauseForDialog(): void {
     this.promptOpen = true;
     this.disarmIdleJobs();
+  }
+
+  /** The question dialog closed: unpause and restart the clock. */
+  resumeAfterDialog(): void {
+    this.promptOpen = false;
+    this.restartIdleClock();
+  }
+
+  /** The user is using this extension's UI (e.g. a key in the Jobs view):
+   *  restart the clock without starting a new stretch. */
+  onUserPresent(): void {
+    this.restartIdleClock();
   }
 
   /** The dialog closed. Restarts the clock but does not start a new stretch:
    *  pi can't tell an answer from a timeout or abort, and a dialog opened by an
    *  idle job's own turn must not let that job fire again. */
   onPromptEnd(): void {
-    this.promptOpen = false;
-    this.restartIdleClock();
+    this.resumeAfterDialog();
   }
 
   private rearmIdleJobs(): void {

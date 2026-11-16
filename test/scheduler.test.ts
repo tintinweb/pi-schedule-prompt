@@ -597,12 +597,39 @@ describe("CronScheduler — idle scheduling", () => {
     scheduler.stop();
   });
 
+  it("keys in the Jobs view restart the clock; its add flow pauses it", () => {
+    const { pi, scheduler } = setup();
+    scheduler.start();
+    scheduler.onPromptStart("custom"); // Jobs view opens
+    vi.advanceTimersByTime(9 * MIN);
+    scheduler.onUserPresent(); // a key press
+    vi.advanceTimersByTime(9 * MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    scheduler.pauseForDialog(); // add flow
+    vi.advanceTimersByTime(30 * MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    scheduler.resumeAfterDialog();
+    vi.advanceTimersByTime(10 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it("Jobs view key presses don't let a fired job fire again", () => {
+    const { pi, scheduler } = setup();
+    scheduler.start();
+    vi.advanceTimersByTime(10 * MIN);
+    scheduler.onUserPresent();
+    vi.advanceTimersByTime(60 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
   it("closing a dialog restarts the clock but doesn't let a fired job fire again", () => {
     const { pi, scheduler } = setup();
     scheduler.start();
     vi.advanceTimersByTime(10 * MIN);
     expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
-    scheduler.onPromptStart();
+    scheduler.onPromptStart("confirm");
     scheduler.onPromptEnd(); // e.g. a dialog in the job's own turn timed out
     vi.advanceTimersByTime(60 * MIN);
     expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);

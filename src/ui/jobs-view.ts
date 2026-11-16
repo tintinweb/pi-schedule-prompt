@@ -63,6 +63,8 @@ export class JobsView implements Component {
   }
 
   handleInput(data: string): void {
+    // The overlay doesn't pause idle jobs, but using it is user activity.
+    this.scheduler.onUserPresent();
     if (this.confirm) {
       this.handleConfirmInput(data);
       return;

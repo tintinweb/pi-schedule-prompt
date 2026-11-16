@@ -244,11 +244,15 @@ export default async function (pi: ExtensionAPI) {
           // Hide the Jobs overlay while the add flow's dialogs are open —
           // otherwise it sits on top of them and steals input.
           let jobsOverlay: OverlayHandle | undefined;
+          // pi reports these dialogs as part of the overlay, which doesn't
+          // pause idle jobs, so pause them here like any question dialog.
           const wrappedRunAdd = async () => {
             jobsOverlay?.setHidden(true);
+            scheduler.pauseForDialog();
             try {
               await runAddFlow(ctx, storage, scheduler, settings, mySessionId);
             } finally {
+              scheduler.resumeAfterDialog();
               jobsOverlay?.setHidden(false);
               jobsOverlay?.focus();
             }
