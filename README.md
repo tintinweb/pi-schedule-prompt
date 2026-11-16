@@ -133,9 +133,11 @@ The tool accepts multiple time formats:
 | Format | Example | Type | Description |
 |--------|---------|------|-------------|
 | **Relative time** | `+5m`, `+1h`, `+30s`, `+2d` | once | Runs once after delay |
-| **Interval** | `5m`, `1h`, `30s`, `2d` | interval | Repeats at interval |
+| **Interval** | `5m`, `1h`, `30s`, `2d` | interval | Repeats at interval (max `24d`; use cron for longer) |
 | **ISO timestamp** | `2026-02-13T15:30:00Z` | once | Runs once at exact time |
 | **Cron expression** | `0 */5 * * * *` | cron | Runs on cron schedule |
+
+Times are displayed in local time with their UTC offset. Cron expressions fire in the timezone Node.js runs in. If times show `+00:00` or cron jobs fire in UTC inside a container, set the `TZ` environment variable explicitly (e.g. `-e TZ=America/Asuncion`).
 
 **Cron format** (6 fields - **must include seconds**):
 

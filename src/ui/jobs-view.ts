@@ -6,7 +6,7 @@
 
 import type { Component } from "@earendil-works/pi-tui";
 import { matchesKey } from "@earendil-works/pi-tui";
-import { CronScheduler } from "../scheduler.js";
+import { CronScheduler, formatLocal } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 import type { CronJob } from "../types.js";
 
@@ -200,8 +200,8 @@ export class JobsView implements Component {
       const next = !this.isSelectionForeign() ? this.scheduler.getNextRun(sel.id) : null;
       const meta = [
         `Type: ${sel.type}`,
-        next ? `Next: ${next.toISOString()}` : null,
-        sel.lastRun ? `Last: ${sel.lastRun}` : null,
+        next ? `Next: ${formatLocal(next)}` : null,
+        sel.lastRun ? `Last: ${formatLocal(sel.lastRun)}` : null,
         `Runs: ${sel.runCount}`,
       ]
         .filter(Boolean)

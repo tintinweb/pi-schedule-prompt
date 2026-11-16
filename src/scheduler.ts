@@ -546,7 +546,7 @@ export class CronScheduler {
       if (delay < 0) {
         return {
           ok: false,
-          error: `Timestamp is in the past: ${date.toISOString()}. Current time: ${new Date().toISOString()}`,
+          error: `Timestamp is in the past: ${formatLocal(date)}. Current time: ${formatLocal(new Date())}`,
         };
       }
       if (delay < 5000) {
@@ -631,4 +631,29 @@ export function formatISOShort(input: Date | string): string {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${month} ${day} ${hours}:${minutes}`;
+}
+
+/** Local wall-clock time with its UTC offset: "2026-11-16 10:30:00 -03:00".
+ *  Used wherever a time is shown to the user or the model, so it matches the
+ *  time the user means ("at 5pm") while the offset keeps it unambiguous.
+ *  Stored values stay UTC ISO. Returns the input unchanged if it doesn't
+ *  parse as a date. */
+export function formatLocal(input: Date | string): string {
+  const date = typeof input === "string" ? new Date(input) : input;
+  if (Number.isNaN(date.getTime())) return String(input);
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMin);
+  const offset = `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${offset}`
+  );
+}
+
+/** A job's schedule as shown to the user or the model: one-shot ISO
+ *  timestamps in local time, cron and interval strings unchanged. */
+export function displaySchedule(job: Pick<CronJob, "type" | "schedule">): string {
+  return job.type === "once" ? formatLocal(job.schedule) : job.schedule;
 }

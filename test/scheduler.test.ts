@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CronScheduler } from "../src/scheduler.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CronScheduler, displaySchedule, formatLocal } from "../src/scheduler.js";
 import type { CronJob } from "../src/types.js";
 
 // Mock the subagent runner: scheduler tests don't actually want to spin up an
@@ -761,5 +761,42 @@ describe("CronScheduler — extensions/skills", () => {
 
     const options = mockRunSubagentOnce.mock.calls[0][4];
     expect(options).toEqual({ extensions: false, skills: undefined });
+  });
+});
+
+describe("formatLocal / displaySchedule", () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  // Zones without DST keep these expectations stable year-round.
+  it("renders local wall-clock time with a positive half-hour offset", () => {
+    process.env.TZ = "Asia/Kolkata";
+    expect(formatLocal("2026-11-16T12:00:00.000Z")).toBe("2026-11-16 17:30:00 +05:30");
+  });
+
+  it("renders a negative offset and rolls the date back", () => {
+    process.env.TZ = "Pacific/Honolulu";
+    expect(formatLocal(new Date("2026-11-16T05:04:03.000Z"))).toBe("2026-11-15 19:04:03 -10:00");
+  });
+
+  it("renders UTC as +00:00", () => {
+    process.env.TZ = "UTC";
+    expect(formatLocal("2026-01-02T03:04:05.000Z")).toBe("2026-01-02 03:04:05 +00:00");
+  });
+
+  it("returns unparseable input unchanged", () => {
+    expect(formatLocal("not a date")).toBe("not a date");
+  });
+
+  it("shows one-shot schedules in local time and leaves cron/interval unchanged", () => {
+    process.env.TZ = "Asia/Kolkata";
+    expect(displaySchedule({ type: "once", schedule: "2026-11-16T12:00:00.000Z" })).toBe(
+      "2026-11-16 17:30:00 +05:30",
+    );
+    expect(displaySchedule({ type: "cron", schedule: "0 0 9 * * *" })).toBe("0 0 9 * * *");
+    expect(displaySchedule({ type: "interval", schedule: "5m" })).toBe("5m");
   });
 });

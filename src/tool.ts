@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
-import { CronScheduler } from "./scheduler.js";
+import { CronScheduler, displaySchedule, formatLocal } from "./scheduler.js";
 import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
 import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
@@ -118,7 +118,7 @@ export function createCronTool(
               content: [
                 {
                   type: "text",
-                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${job.schedule}\nPrompt: ${job.prompt}${modelLine}`,
+                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${displaySchedule(job)}\nPrompt: ${job.prompt}${modelLine}`,
                 },
               ],
               details,
@@ -298,11 +298,11 @@ export function createCronTool(
             for (const job of jobs) {
               const status = job.enabled ? "✓" : "✗";
               const nextRun = scheduler.getNextRun(job.id);
-              const nextStr = nextRun ? `Next: ${nextRun.toISOString()}` : "";
-              const lastStr = job.lastRun ? `Last: ${job.lastRun}` : "Never run";
+              const nextStr = nextRun ? `Next: ${formatLocal(nextRun)}` : "";
+              const lastStr = job.lastRun ? `Last: ${formatLocal(job.lastRun)}` : "Never run";
 
               lines.push(`${status} ${job.name} (${job.id})`);
-              lines.push(`  Type: ${job.type} | Schedule: ${job.schedule}`);
+              lines.push(`  Type: ${job.type} | Schedule: ${displaySchedule(job)}`);
               if (job.model) {
                 lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
               }
@@ -394,7 +394,7 @@ export function createCronTool(
           const status = job.enabled ? theme.fg("success", "✓") : theme.fg("muted", "✗");
           lines.push(`${status} ${theme.fg("text", job.name)} ${theme.fg("dim", `(${job.id})`)}`);
           lines.push(
-            `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${job.schedule}`
+            `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${displaySchedule(job)}`
           );
           if (job.model) {
             const subagentTag = job.notify ? "(subagent, notifies parent)" : "(subagent)";
@@ -406,7 +406,7 @@ export function createCronTool(
           }
           lines.push(`  ${theme.fg("dim", "Prompt:")} ${job.prompt}`);
           if (job.lastRun) {
-            lines.push(`  ${theme.fg("dim", "Last run:")} ${job.lastRun}`);
+            lines.push(`  ${theme.fg("dim", "Last run:")} ${formatLocal(job.lastRun)}`);
           }
           lines.push(`  ${theme.fg("dim", "Runs:")} ${job.runCount}`);
         }
