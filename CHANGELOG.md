@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-16
+
 ### Changed
 - **Breaking**: jobs moved from `<cwd>/.pi/schedule-prompts.json` to `<agentDir>/schedule-prompts/projects/<sha256(realpath(cwd))>.json`, the layout pi-subagents uses for per-project state. The store now follows `PI_CODING_AGENT_DIR` (each pi profile has its own jobs) and stays per project, so shared jobs still fire only in their own project. When pi trusts the project, its old file is merged in once (jobs already in the new store win on an id clash) and kept as a backup; a store records the import, so a project trusted only later still imports. Each project migrates on its own.
 - **Breaking**: peer dependency floor raised to pi `>=1.5.0` (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`); dev dependencies now test against 1.5.2. `typebox` added as a peer (pi supplies it to extensions at runtime).
