@@ -5,7 +5,8 @@
  * - A `schedule_prompt` tool for managing scheduled prompts
  * - A widget displaying all scheduled prompts with status
  * - /schedule-prompt command for interactive management
- * - Persistence via .pi/schedule-prompts.json (jobs) and .pi/schedule-prompts-settings.json (settings)
+ * - Persistence: jobs in <agentDir>/schedule-prompts/projects/<sha256(cwd)>.json; settings in
+ *   <agentDir>/schedule-prompts-settings.json (global) and .pi/schedule-prompts-settings.json (project, trusted only)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -55,6 +56,10 @@ export default async function (pi: ExtensionAPI) {
   // widget read via closure so toggles take effect without re-registering.
   let settings: ScheduleSettings = {};
   const isWidgetVisible = () => settings.widgetVisible !== false;
+  // ctx.isProjectTrusted() at session start. Project-local files (settings
+  // override, legacy job store) are honored only for trusted projects.
+  let projectTrusted = false;
+  const notPersistedReason = () => (projectTrusted ? "failed to persist" : "project not trusted");
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
@@ -118,8 +123,21 @@ export default async function (pi: ExtensionAPI) {
     // The old runs' teardown finishes in the background (tracked in pendingTeardowns).
     cleanupSession(ctx);
 
-    settings = loadSettings(ctx.cwd);
+    projectTrusted = ctx.isProjectTrusted?.() === true;
+    settings = loadSettings(ctx.cwd, projectTrusted);
     storage = new CronStorage(ctx.cwd);
+    const migration = storage.migrateLegacy(projectTrusted);
+    if (migration === "untrusted") {
+      ctx.ui?.notify?.(
+        "Scheduled prompts in this project's .pi/schedule-prompts.json were not imported: the project is not trusted.",
+        "warning",
+      );
+    } else if (migration === "failed") {
+      ctx.ui?.notify?.(
+        "Could not import this project's .pi/schedule-prompts.json; see the log.",
+        "warning",
+      );
+    }
     scheduler = new CronScheduler(storage, pi, ctx);
     widget = new CronWidget(storage, scheduler, pi, isWidgetVisible, ctx.sessionManager.getSessionId());
 
@@ -243,10 +261,10 @@ export default async function (pi: ExtensionAPI) {
               const next = !isWidgetVisible();
               settings = { ...settings, widgetVisible: next };
               next ? widget.show(ctx) : widget.hide(ctx);
-              const persisted = saveSettings(ctx.cwd, { widgetVisible: next });
+              const persisted = saveSettings(ctx.cwd, { widgetVisible: next }, projectTrusted);
               if (!persisted) {
                 ctx.ui.notify(
-                  `Widget ${next ? "shown" : "hidden"} (session only; failed to persist)`,
+                  `Widget ${next ? "shown" : "hidden"} (session only; ${notPersistedReason()})`,
                   "warning",
                 );
               }
@@ -254,10 +272,10 @@ export default async function (pi: ExtensionAPI) {
               // Affects newly-created jobs only; existing jobs keep their binding.
               const next = bound ? "workdir" : "session";
               settings = { ...settings, defaultJobScope: next };
-              const persisted = saveSettings(ctx.cwd, { defaultJobScope: next });
+              const persisted = saveSettings(ctx.cwd, { defaultJobScope: next }, projectTrusted);
               if (!persisted) {
                 ctx.ui.notify(
-                  `Bind new jobs to session: ${next === "session" ? "yes" : "no"} (session only; failed to persist)`,
+                  `Bind new jobs to session: ${next === "session" ? "yes" : "no"} (session only; ${notPersistedReason()})`,
                   "warning",
                 );
               }

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Breaking**: jobs moved from `<cwd>/.pi/schedule-prompts.json` to `<agentDir>/schedule-prompts/projects/<sha256(realpath(cwd))>.json`, the layout pi-subagents uses for per-project state. The store now follows `PI_CODING_AGENT_DIR` (each pi profile has its own jobs) and stays per project, so shared jobs still fire only in their own project. When pi trusts the project, its old file is merged in once (jobs already in the new store win on an id clash) and kept as a backup; a store records the import, so a project trusted only later still imports. Each project migrates on its own.
 - **Breaking**: peer dependency floor raised to pi `>=1.5.0` (`@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui`); dev dependencies now test against 1.5.2. `typebox` added as a peer (pi supplies it to extensions at runtime).
 - `Type`/`Static` are imported from `typebox` again, reversing the 0.4.0 change: pi-ai 1.5 no longer re-exports TypeBox. `StringEnum` is now a local helper with the same `{ type: "string", enum }` output as pi's, because pi-ai's own export returns a pi-schema type that TypeBox's `Static` cannot infer.
 
@@ -20,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On pi shutdown, the `session_shutdown` handler now waits for in-flight subagent runs to finish tearing down, including runs from a scheduler replaced by a repeated `session_start` (a defensive path; pi always sends `session_shutdown` first). pi exits right after `session_shutdown` handlers resolve, so subagent extensions' cleanup (e.g. stopping MCP servers) used to be cut off. The wait is capped at 10s, so a run stuck in setup (e.g. an extension whose `session_start` never resolves) cannot hang quit. `CronScheduler.stop()` now returns a promise that settles once its runs' teardown is done.
 - Aborting a running subagent job no longer leaves `session.abort()` promises unhandled.
 - `nanoid` raised to `^5.1.16` (security advisory).
+- Project files are found through pi's `CONFIG_DIR_NAME` rather than a hardcoded `.pi`, so builds that rename the config directory work.
+
+### Security
+- Project-local files follow pi's project-trust decision (`ctx.isProjectTrusted()`), as pi's extension docs ask: the one-time import of a legacy `.pi/schedule-prompts.json` and the project settings file `.pi/schedule-prompts-settings.json` are skipped when pi does not trust the project. Jobs themselves no longer live in the repo, so a checkout cannot add jobs after the import. Limitation: pi does not count these files as trust-requiring, so a repo whose `.pi/` contains nothing else is trusted automatically, without a prompt, and its legacy file is imported. Projects with a saved "do not trust" decision, or with pi's own protected files (`.pi/settings.json`, `.pi/extensions`, …), are covered.
 
 ## [0.4.1] - 2026-06-23
 

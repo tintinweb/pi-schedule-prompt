@@ -170,7 +170,8 @@ describe("subagent lifecycle (real pi)", () => {
     } as any;
     await extension(pi);
     const ui = { setWidget() {}, notify() {}, select: async () => undefined, custom: async () => undefined };
-    const ctx = { ...(await makeCtx()), cwd, hasUI: false, ui };
+    // Trusted, so session_start imports the legacy .pi/schedule-prompts.json written above.
+    const ctx = { ...(await makeCtx()), cwd, hasUI: false, ui, isProjectTrusted: () => true };
     const fire = async (event: string, payload: any) => {
       for (const h of handlers[event] ?? []) await h(payload, ctx);
     };

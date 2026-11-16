@@ -1,17 +1,91 @@
-import * as fs from "fs";
-import * as path from "path";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { CronJob, CronStore } from "./types.js";
 
+const LEGACY_FILE = "schedule-prompts.json";
+
 /**
- * Handles persistence of scheduled prompts to .pi/schedule-prompts.json
+ * The real path of `cwd`, so a symlinked path and its target share one store.
+ * Falls back to the resolved path when it cannot be resolved (e.g. deleted dir).
+ */
+export function canonicalProjectPath(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/** Store key for a project: sha256 of its canonical path (same scheme as pi-subagents' missions). */
+export function projectKey(cwd: string): string {
+  return createHash("sha256").update(canonicalProjectPath(cwd)).digest("hex");
+}
+
+/** Outcome of a legacy-store migration attempt, for the caller to report. */
+export type LegacyMigration = "none" | "migrated" | "untrusted" | "failed";
+
+/**
+ * Persists scheduled prompts as per-project runtime state in the pi agent dir:
+ * `<agentDir>/schedule-prompts/projects/<sha256(realpath(cwd))>.json`.
+ *
+ * `getAgentDir()` honors `PI_CODING_AGENT_DIR`, so each pi profile has its own
+ * store, and the per-project key keeps one project's jobs from loading in
+ * another. The project path is written into the file so it can be identified
+ * when browsing or hand-editing.
  */
 export class CronStorage {
   private readonly storePath: string;
-  private readonly piDir: string;
+  private readonly storeDir: string;
+  private readonly projectPath: string;
+  private readonly legacyStorePath: string;
 
   constructor(cwd: string) {
-    this.piDir = path.join(cwd, ".pi");
-    this.storePath = path.join(this.piDir, "schedule-prompts.json");
+    this.projectPath = canonicalProjectPath(cwd);
+    this.storeDir = path.join(getAgentDir(), "schedule-prompts", "projects");
+    this.storePath = path.join(this.storeDir, `${projectKey(cwd)}.json`);
+    this.legacyStorePath = path.join(cwd, CONFIG_DIR_NAME, LEGACY_FILE);
+  }
+
+  /**
+   * One-time import of a pre-0.5 `<cwd>/.pi/schedule-prompts.json`, gated on
+   * pi's project-trust decision (`ctx.isProjectTrusted()`). The legacy file is
+   * left in place as a backup.
+   *
+   * The import is recorded as `legacyImported` in the store, not inferred from
+   * the store existing: a project that was untrusted at first can gain a store
+   * (the user adds a job) and still import its legacy jobs once trusted. Legacy
+   * jobs are merged by id, so jobs already in the store win.
+   */
+  migrateLegacy(trusted: boolean): LegacyMigration {
+    if (!fs.existsSync(this.legacyStorePath)) return "none";
+    try {
+      let current: CronStore = { jobs: [], version: 1 };
+      if (fs.existsSync(this.storePath)) {
+        // Parse directly rather than via load(): a corrupt store must fail the
+        // import, not be overwritten with the legacy jobs.
+        current = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as CronStore;
+        if (current.legacyImported) return "none";
+      }
+      if (!trusted) return "untrusted";
+
+      const legacy = JSON.parse(fs.readFileSync(this.legacyStorePath, "utf-8")) as Partial<CronStore>;
+      if (!Array.isArray(legacy.jobs)) throw new Error("missing jobs array");
+      const known = new Set(current.jobs.map((j) => j.id));
+      const imported = legacy.jobs.filter((j) => !known.has(j.id));
+      this.save({
+        ...current,
+        version: current.version ?? legacy.version ?? 1,
+        jobs: [...current.jobs, ...imported],
+        legacyImported: true,
+      });
+      return "migrated";
+    } catch (error) {
+      console.error(`Failed to migrate legacy scheduled prompts from ${this.legacyStorePath}:`, error);
+      return "failed";
+    }
   }
 
   /**
@@ -37,14 +111,18 @@ export class CronStorage {
    */
   save(store: CronStore): void {
     try {
-      // Ensure .pi directory exists
-      if (!fs.existsSync(this.piDir)) {
-        fs.mkdirSync(this.piDir, { recursive: true });
-      }
+      fs.mkdirSync(this.storeDir, { recursive: true });
 
-      // Write atomically using temp file
+      // Write atomically using temp file. `cwd` goes first so a hand-editor
+      // sees which project the file belongs to.
       const tempPath = `${this.storePath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), "utf-8");
+      const data: CronStore = {
+        cwd: this.projectPath,
+        version: store.version,
+        ...(store.legacyImported ? { legacyImported: true } : {}),
+        jobs: store.jobs,
+      };
+      fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), "utf-8");
       fs.renameSync(tempPath, this.storePath);
     } catch (error) {
       console.error("Failed to save scheduled prompts:", error);

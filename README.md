@@ -107,7 +107,7 @@ The widget displays below your editor (only when jobs exist):
 
 `/schedule-prompt` opens a two-item menu:
 
-- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this cwd), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
+- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this project), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
 - **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
@@ -161,12 +161,14 @@ The tool accepts multiple time formats:
 
 **Storage:**
 
-- Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
-- Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
+- Job data: `<agentDir>/schedule-prompts/projects/<key>.json`, one file per project (atomic writes, auto-created). `<agentDir>` is pi's agent directory: `$PI_CODING_AGENT_DIR` if set, else `~/.pi/agent`, so each pi profile has its own jobs. `<key>` is the SHA-256 of the project's real path; the file's `cwd` field names the project.
+- Settings: two-layer config — `<agentDir>/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load. The project file is read and written only when pi trusts the project.
+- Upgrading from 0.4.x: when pi trusts the project, its old `<cwd>/.pi/schedule-prompts.json` is merged into the new store once and left in place as a backup. While the project is untrusted it is not imported, and pi shows a warning; it is imported once you trust the project.
+- Trust follows pi's own decision (`ctx.isProjectTrusted()`). pi asks only when `.pi/` contains one of its protected files (`settings.json`, `mcp.json`, `extensions`, …), so a project whose `.pi/` holds only this extension's files is trusted automatically unless you saved "do not trust" for it with `/trust`. Review a cloned repo's `.pi/schedule-prompts.json` before opening pi there.
 
 **Job binding:**
 
-By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi in this cwd (useful for hand-edited project-wide cron), remove its `session` field from `<cwd>/.pi/schedule-prompts.json`.
+By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi session in this project on this profile (useful for hand-edited project-wide cron), remove its `session` field from the project's job file (see **Storage**; `cwd` in the file identifies the project).
 
 Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
 
@@ -197,7 +199,7 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 - Shows: status icon, name, schedule (human-readable), prompt (truncated), next run, last run, run count
 - Human-readable formatting: "every minute", "daily", "Feb 13 15:30" instead of raw cron/ISO
 - Auto-refreshes every 30 seconds
-- Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<cwd>/.pi/schedule-prompts-settings.json`, with `~/.pi/agent/schedule-prompts-settings.json` as the global default
+- Visibility togglable via `/schedule-prompt → Settings`; persists across sessions (and package upgrades) in `<cwd>/.pi/schedule-prompts-settings.json` (trusted projects only), with `<agentDir>/schedule-prompts-settings.json` as the global default
 - Status icons: `✓` enabled, `✗` disabled, `⟳` running, `!` error
 
 ## Examples
@@ -251,7 +253,7 @@ By default a scheduled prompt is injected into your current chat. Set `model` on
 
 By default the result is shown in chat but the parent agent is **not** woken up — you read it, the agent isn't interrupted. Set `notify: true` on the job if you want the parent to react to each completion (e.g. for autonomous workflows). Recommended only for low-frequency jobs; a `notify: true` recurring job that fires every 5 minutes will trigger a parent-agent turn every 5 minutes.
 
-> **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in `.pi/schedule-prompts.json` as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
+> **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in the project's job file as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
 
 ## Development
 
@@ -278,7 +280,7 @@ pi -e ./src/index.ts
 ```
 src/
   types.ts          # CronJob, CronJobType, CronToolParams
-  storage.ts        # Job persistence (.pi/schedule-prompts.json)
+  storage.ts        # Job persistence (<agentDir>/schedule-prompts/projects/<key>.json)
   settings.ts       # Settings persistence (global + project, project overrides)
   scheduler.ts      # Core scheduling engine with croner
   subagent.ts       # Lightweight in-process agent runner (per-task model)

@@ -74,6 +74,10 @@ export interface CronJob {
  * Persistent storage for cron jobs
  */
 export interface CronStore {
+  /** Canonical project path the store belongs to. Informational; the file name is the key. */
+  cwd?: string;
+  /** Set once the project's legacy `<cwd>/.pi/schedule-prompts.json` has been imported. */
+  legacyImported?: boolean;
   jobs: CronJob[];
   version: number;
 }

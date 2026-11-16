@@ -28,27 +28,27 @@ describe("ScheduleSettings — sanitize", () => {
 
   it("accepts defaultJobScope='session'", () => {
     writeProjectSettings({ defaultJobScope: "session" });
-    expect(loadSettings(cwd).defaultJobScope).toBe("session");
+    expect(loadSettings(cwd, true).defaultJobScope).toBe("session");
   });
 
   it("accepts defaultJobScope='workdir'", () => {
     writeProjectSettings({ defaultJobScope: "workdir" });
-    expect(loadSettings(cwd).defaultJobScope).toBe("workdir");
+    expect(loadSettings(cwd, true).defaultJobScope).toBe("workdir");
   });
 
   it("drops a typo'd defaultJobScope value (no garbage propagates)", () => {
     writeProjectSettings({ defaultJobScope: "sesssion" });
-    expect(loadSettings(cwd).defaultJobScope).toBeUndefined();
+    expect(loadSettings(cwd, true).defaultJobScope).toBeUndefined();
   });
 
   it("drops a non-string defaultJobScope", () => {
     writeProjectSettings({ defaultJobScope: 42 });
-    expect(loadSettings(cwd).defaultJobScope).toBeUndefined();
+    expect(loadSettings(cwd, true).defaultJobScope).toBeUndefined();
   });
 
   it("preserves widgetVisible alongside defaultJobScope", () => {
     writeProjectSettings({ widgetVisible: false, defaultJobScope: "workdir" });
-    const s = loadSettings(cwd);
+    const s = loadSettings(cwd, true);
     expect(s.widgetVisible).toBe(false);
     expect(s.defaultJobScope).toBe("workdir");
   });
@@ -71,13 +71,13 @@ describe("saveSettings — partial update", () => {
   }
 
   it("creates the project file when none exists, with only the changed field", () => {
-    expect(saveSettings(cwd, { widgetVisible: false })).toBe(true);
+    expect(saveSettings(cwd, { widgetVisible: false }, true)).toBe(true);
     expect(readProjectFile()).toEqual({ widgetVisible: false });
   });
 
   it("merges into an existing project file rather than overwriting", () => {
-    saveSettings(cwd, { widgetVisible: false });
-    saveSettings(cwd, { defaultJobScope: "workdir" });
+    saveSettings(cwd, { widgetVisible: false }, true);
+    saveSettings(cwd, { defaultJobScope: "workdir" }, true);
     expect(readProjectFile()).toEqual({ widgetVisible: false, defaultJobScope: "workdir" });
   });
 
@@ -85,14 +85,58 @@ describe("saveSettings — partial update", () => {
     // Simulate: user has a global default for defaultJobScope, then toggles
     // widgetVisible via the UI. The project file should contain only
     // widgetVisible — defaultJobScope must keep bleeding through from global.
-    saveSettings(cwd, { widgetVisible: true });
+    saveSettings(cwd, { widgetVisible: true }, true);
     expect(readProjectFile()).toEqual({ widgetVisible: true });
     expect("defaultJobScope" in readProjectFile()).toBe(false);
   });
 
   it("overwrites a previously-set field", () => {
-    saveSettings(cwd, { widgetVisible: false });
-    saveSettings(cwd, { widgetVisible: true });
+    saveSettings(cwd, { widgetVisible: false }, true);
+    saveSettings(cwd, { widgetVisible: true }, true);
     expect(readProjectFile()).toEqual({ widgetVisible: true });
+  });
+});
+
+describe("ScheduleSettings — agent dir and project trust", () => {
+  let agentDir: string;
+  let cwd: string;
+  let previousAgentDir: string | undefined;
+
+  beforeEach(() => {
+    previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    agentDir = mkdtempSync(join(tmpdir(), "pi-schedule-agent-"));
+    cwd = mkdtempSync(join(tmpdir(), "pi-schedule-settings-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "schedule-prompts-settings.json"),
+      JSON.stringify({ widgetVisible: false, defaultJobScope: "session" }),
+    );
+    writeFileSync(
+      join(cwd, ".pi", "schedule-prompts-settings.json"),
+      JSON.stringify({ defaultJobScope: "workdir" }),
+    );
+  });
+
+  afterEach(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(agentDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("reads global settings from PI_CODING_AGENT_DIR, overridden by a trusted project", () => {
+    expect(loadSettings(cwd, true)).toEqual({ widgetVisible: false, defaultJobScope: "workdir" });
+  });
+
+  it("ignores the project file when the project is not trusted", () => {
+    expect(loadSettings(cwd, false)).toEqual({ widgetVisible: false, defaultJobScope: "session" });
+  });
+
+  it("does not write the project file when the project is not trusted", () => {
+    expect(saveSettings(cwd, { widgetVisible: true }, false)).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(cwd, ".pi", "schedule-prompts-settings.json"), "utf-8")),
+    ).toEqual({ defaultJobScope: "workdir" });
   });
 });
