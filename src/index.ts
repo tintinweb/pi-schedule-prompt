@@ -19,10 +19,36 @@ import { runAddFlow } from "./ui/add-flow.js";
 import { CronWidget } from "./ui/cron-widget.js";
 import { JobsView } from "./ui/jobs-view.js";
 
+/** Longest pi quit waits for in-flight subagent teardown. */
+const SHUTDOWN_TEARDOWN_TIMEOUT_MS = 10_000;
+
+/** Resolve when all `pending` settle or after `ms`, whichever is first. */
+export async function waitForTeardowns(pending: Set<Promise<void>>, ms: number): Promise<void> {
+  if (pending.size === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+  });
+  const outcome = await Promise.race([
+    Promise.allSettled([...pending]).then(() => "done" as const),
+    timeout,
+  ]);
+  clearTimeout(timer);
+  if (outcome === "timeout") {
+    console.warn(
+      `[pi-schedule-prompt] Subagent teardown did not finish within ${ms}ms of shutdown; exiting anyway.`,
+    );
+  }
+}
+
 export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
   let scheduler: CronScheduler;
   let widget: CronWidget;
+  // Subagent teardowns still running, from every scheduler this extension has
+  // created (session_start replaces the scheduler without waiting for the old
+  // one). Awaited, bounded, on session_shutdown.
+  const pendingTeardowns = new Set<Promise<void>>();
   // Refreshed in initializeSession; mutated by Settings submenu. The tool and
   // widget read via closure so toggles take effect without re-registering.
   let settings: ScheduleSettings = {};
@@ -87,8 +113,8 @@ export default async function (pi: ExtensionAPI) {
     // Without this, every `session_start` (fires on reload/resume/fork too, not
     // only on fresh startup) leaks a live croner timer into the event loop,
     // accumulating duplicate fires for every recurring job over time.
-    // Not awaited: the old runs' teardown finishes in the background.
-    void cleanupSession(ctx);
+    // The old runs' teardown finishes in the background (tracked in pendingTeardowns).
+    cleanupSession(ctx);
 
     settings = loadSettings(ctx.cwd);
     storage = new CronStorage(ctx.cwd);
@@ -103,17 +129,19 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  // Returns once in-flight subagent runs have torn down their sessions.
-  const cleanupSession = (ctx: any): Promise<void> => {
+  const cleanupSession = (ctx: any): void => {
     // Stop scheduler (timers clear synchronously; subagent teardown settles later)
-    const stopped = scheduler ? scheduler.stop() : Promise.resolve();
+    if (scheduler) {
+      const stopped = scheduler.stop();
+      pendingTeardowns.add(stopped);
+      void stopped.finally(() => pendingTeardowns.delete(stopped));
+    }
 
     // Hide widget
     if (widget) {
       widget.hide(ctx);
       widget.destroy();
     }
-    return stopped;
   };
 
   const autoCleanupDisabledJobs = (ctx: any) => {
@@ -143,9 +171,12 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     autoCleanupDisabledJobs(ctx);
-    // Await subagent teardown: pi exits right after session_shutdown handlers
-    // resolve, which would orphan subagent extensions' child processes.
-    await cleanupSession(ctx);
+    cleanupSession(ctx);
+    // pi exits right after session_shutdown handlers resolve, which would cut
+    // off subagent extensions' cleanup (orphaning e.g. MCP child processes).
+    // Wait for it, but bounded: a run stuck in setup (e.g. a hung extension
+    // session_start) never settles, and quit must not hang on it.
+    await waitForTeardowns(pendingTeardowns, SHUTDOWN_TEARDOWN_TIMEOUT_MS);
   });
 
   // --- Register /schedule-prompt command ---

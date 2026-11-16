@@ -1,11 +1,12 @@
 // Subagent lifecycle against the real (unmocked) pi runtime: a probe extension
 // loaded by pi's own loader, a fake provider, and a real parent ModelRegistry.
 
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import extension, { waitForTeardowns } from "../src/index.js";
 import { CronScheduler } from "../src/scheduler.js";
 import { runSubagentOnce } from "../src/subagent.js";
 import type { CronJob } from "../src/types.js";
@@ -43,11 +44,13 @@ describe("subagent lifecycle (real pi)", () => {
     if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     delete process.env.PROBE_SLOW_INPUT;
+    delete process.env.PROBE_BAD_RESOURCES;
     rmSync(dir, { recursive: true, force: true });
   });
   beforeEach(() => {
     probeLog().length = 0;
     delete process.env.PROBE_SLOW_INPUT;
+    delete process.env.PROBE_BAD_RESOURCES;
   });
 
   it("runs an extension job end to end: session_start, model call, session_shutdown", async () => {
@@ -121,5 +124,89 @@ describe("subagent lifecycle (real pi)", () => {
     // pi exits the process right after session_shutdown handlers resolve.
     expect(probeLog()).toContain("session_shutdown_done");
     expect(probeLog()).not.toContain("model_called");
+  });
+
+  it("sends session_shutdown when bindExtensions throws after session_start", async () => {
+    process.env.PROBE_BAD_RESOURCES = "1";
+
+    const result = await runSubagentOnce(await makeCtx(), "hi", "fake/m", undefined, { extensions: true });
+
+    expect(result.ok).toBe(false);
+    expect(probeLog()).toEqual(["session_start", "session_shutdown_done"]);
+  });
+
+  it("on quit, waits for teardown of runs from a scheduler replaced by an earlier session_start", async () => {
+    process.env.PROBE_SLOW_INPUT = "1";
+    const cwd = join(dir, "cwd-restart");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    const job = {
+      id: "j",
+      name: "demo",
+      type: "once",
+      schedule: new Date(Date.now() + 300).toISOString(),
+      prompt: "hi",
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      runCount: 0,
+      model: "fake/m",
+      extensions: true,
+    };
+    writeFileSync(join(cwd, ".pi/schedule-prompts.json"), JSON.stringify({ version: 1, jobs: [job] }));
+
+    const handlers: Record<string, Array<(e: any, c: any) => unknown>> = {};
+    const pi = {
+      on: (e: string, h: any) => {
+        if (!handlers[e]) handlers[e] = [];
+        handlers[e].push(h);
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerMessageRenderer() {},
+      sendMessage() {},
+      sendUserMessage() {},
+      events: { emit() {}, on: () => () => {} },
+    } as any;
+    await extension(pi);
+    const ui = { setWidget() {}, notify() {}, select: async () => undefined, custom: async () => undefined };
+    const ctx = { ...(await makeCtx()), cwd, hasUI: false, ui };
+    const fire = async (event: string, payload: any) => {
+      for (const h of handlers[event] ?? []) await h(payload, ctx);
+    };
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await fire("session_start", { type: "session_start", reason: "startup" });
+    await waitForLog("input_hook_waiting");
+    await fire("session_start", { type: "session_start", reason: "resume" });
+    await fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+
+    // pi exits the process right after session_shutdown handlers resolve.
+    expect(probeLog()).toContain("session_shutdown_done");
+    log.mockRestore();
+  });
+});
+
+describe("waitForTeardowns", () => {
+  it("gives up after the timeout so pi quit cannot hang on a stuck subagent", async () => {
+    vi.useFakeTimers();
+    try {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let settled = false;
+      const waiting = waitForTeardowns(new Set([new Promise<void>(() => {})]), 10_000).then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(settled).toBe(true);
+      warn.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves as soon as all teardowns settle", async () => {
+    await expect(waitForTeardowns(new Set([Promise.resolve()]), 10_000)).resolves.toBeUndefined();
   });
 });

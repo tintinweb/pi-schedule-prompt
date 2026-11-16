@@ -257,15 +257,18 @@ export async function runSubagentOnce(
 
     let onAbort: (() => void) | undefined;
     let unsubscribe: (() => void) | undefined;
-    // Only extensions that got session_start may get session_shutdown.
+    // Whether extensions may have received session_start (and so need session_shutdown).
     let extensionsBound = false;
     try {
       // Checked before bindExtensions so an aborted job doesn't start (and
       // then shut down) its extensions. Teardown runs in finally.
       if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
       if (isEnabled(options.extensions)) {
-        await session.bindExtensions({});
+        // Set before awaiting: bindExtensions delivers session_start first and
+        // can still throw afterwards (resource discovery, system prompt rebuild),
+        // and those extensions must then still get session_shutdown.
         extensionsBound = true;
+        await session.bindExtensions({});
       }
       if (signal) {
         if (signal.aborted) return { ok: false, error: ABORTED_BEFORE_START };
