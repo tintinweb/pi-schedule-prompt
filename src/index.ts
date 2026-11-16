@@ -199,6 +199,36 @@ export default async function (pi: ExtensionAPI) {
     await waitForTeardowns(pendingTeardowns, SHUTDOWN_TEARDOWN_TIMEOUT_MS);
   });
 
+  // --- Idle tracking for `idle` jobs ---
+  // `agent_settled`, not `agent_end`: pi can start more runs after agent_end
+  // (retries, compaction retry, queued follow-ups); settled is the final-idle signal.
+  pi.on("agent_start", async () => {
+    scheduler?.onBusy();
+  });
+
+  pi.on("agent_settled", async (event) => {
+    scheduler?.onSettled(event.aborted);
+  });
+
+  pi.on("input", async (event) => {
+    // Our own scheduled prompts arrive as source "extension" and must not
+    // start a new idle stretch, or an idle job would re-arm itself.
+    if (event.source !== "extension") scheduler?.onUserInput();
+  });
+
+  pi.on("user_bash", async () => {
+    scheduler?.onUserActivity();
+  });
+
+  // Blocking dialogs, including this extension's own /schedule-prompt menus.
+  pi.on("ui_prompt_start", async () => {
+    scheduler?.onPromptStart();
+  });
+
+  pi.on("ui_prompt_end", async () => {
+    scheduler?.onPromptEnd();
+  });
+
   // --- Register /schedule-prompt command ---
 
   pi.registerCommand("schedule-prompt", {

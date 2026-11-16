@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `idle` job type: `schedule` is a duration (`10m`, `1h`). The job fires once after the user has been inactive that long, as soon as the agent is idle, then waits for new user activity (a message, `!` command or abort) before it can fire again. Idle is tracked with pi's `agent_settled` event, so retries, compaction retries and queued follow-ups count as busy. The clock measures user inactivity: it restarts after your own turns, aborts, `!` commands and closed dialogs, not after scheduled turns, so frequent scheduled jobs can't starve it. Open dialogs pause it. Its own scheduled turn never re-arms it, and the widget shows a countdown while it is armed. Works with `model` (subagent) like other job types ([#21](https://github.com/tintinweb/pi-schedule-prompt/issues/21)).
+
 ## [0.5.0] - 2026-11-16
 
 ### Changed

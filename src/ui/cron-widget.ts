@@ -156,6 +156,8 @@ export class CronWidget {
       let scheduleRaw: string;
       if (job.type === "cron") {
         scheduleRaw = humanizeCron(job.schedule);
+      } else if (job.type === "idle") {
+        scheduleRaw = CronScheduler.describeSchedule(job.type, job.schedule);
       } else if (job.type === "once" && job.schedule.includes("T")) {
         scheduleRaw = formatISOShort(job.schedule);
       } else {

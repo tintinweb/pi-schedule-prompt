@@ -474,3 +474,32 @@ describe("schedule_prompt — extensions/skills", () => {
     });
   });
 });
+
+describe("schedule_prompt — idle jobs", () => {
+  it("add with type='idle' stores the duration and intervalMs", async () => {
+    const { tool, storage } = buildTool();
+    const result = await tool.execute(
+      "call-1",
+      { action: "add", name: "nightly-cleanup", schedule: "15m", prompt: "tidy up", type: "idle" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    const job = storage.getAllJobs()[0];
+    expect(job).toMatchObject({ type: "idle", schedule: "15m", intervalMs: 15 * 60 * 1000 });
+    expect(result.content[0]).toMatchObject({ type: "text" });
+  });
+
+  it("add with type='idle' rejects a non-duration schedule", async () => {
+    const { tool, storage } = buildTool();
+    const result = await tool.execute(
+      "call-1",
+      { action: "add", schedule: "0 * * * * *", prompt: "x", type: "idle" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details.error).toContain("Invalid idle duration");
+    expect(storage.getAllJobs()).toHaveLength(0);
+  });
+});

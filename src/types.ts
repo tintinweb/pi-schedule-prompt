@@ -21,7 +21,7 @@ function StringEnum<T extends readonly string[]>(
 /**
  * Type of cron job
  */
-export type CronJobType = "cron" | "once" | "interval";
+export type CronJobType = "cron" | "once" | "interval" | "idle";
 
 /**
  * Status of the last job execution
@@ -44,7 +44,7 @@ export interface CronJob {
   enabled: boolean;
   /** Type of job */
   type: CronJobType;
-  /** Interval in milliseconds (for interval type) */
+  /** Duration in milliseconds: the period for `interval`, the idle threshold for `idle` */
   intervalMs?: number;
   /** When the job was created */
   createdAt: string;
@@ -108,7 +108,7 @@ export const CronToolParams = Type.Object({
   schedule: Type.Optional(
     Type.String({
       description:
-        "Required for add. Cron expression, ISO timestamp, relative time (+10s, +5m), or interval string",
+        "Required for add. Cron expression, ISO timestamp, relative time (+10s, +5m), interval string (5m), or for idle jobs the idle duration (10m)",
     })
   ),
   prompt: Type.Optional(
@@ -122,8 +122,9 @@ export const CronToolParams = Type.Object({
     })
   ),
   type: Type.Optional(
-    StringEnum(["cron", "once", "interval"], {
-      description: "Job type. Use 'once' for relative times like '+10s'. Default is cron",
+    StringEnum(["cron", "once", "interval", "idle"], {
+      description:
+        "Job type. Use 'once' for relative times like '+10s'. Use 'idle' to fire once after the user has been inactive for the schedule's duration (e.g. '10m'), as soon as the agent is idle; it fires again only after new user activity. Default is cron",
     })
   ),
   description: Type.Optional(

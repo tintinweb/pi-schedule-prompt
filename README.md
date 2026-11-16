@@ -23,6 +23,7 @@ Schedule future prompts with natural language:
 - **Job types**:
   - **Recurring** (cron/interval) — repeats automatically
   - **One-shot** (once) — runs once then auto-disables
+  - **Idle** (idle) — runs once after the agent has been idle for a set time, e.g. for maintenance
 - **Per-task model (optional)**: set `model` on a job to run that prompt in a separate in-process agent session — your current chat is not affected
 - **Actions**: add, remove, list, enable, disable, update, cleanup
 - **Auto-cleanup**: Removes disabled jobs on session exit
@@ -37,6 +38,15 @@ Execute prompts repeatedly at set intervals:
 "schedule 'check build status' every 5 minutes"
 "run 'analyze metrics' every hour"
 "execute 'daily summary' at midnight every day"
+```
+
+#### Run when idle (Maintenance)
+
+Run a prompt once you've stepped away:
+
+```
+"after 15 minutes of inactivity, update the changelog from today's commits"
+"when I've been idle for an hour, run the test suite and summarise failures"
 ```
 
 #### Remind (One-time Notifications)
@@ -121,10 +131,10 @@ The widget displays below your editor (only when jobs exist):
 |-------|------|----------|-------------|
 | `action` | `add` \| `remove` \| `list` \| `enable` \| `disable` \| `update` \| `cleanup` | yes | Operation to perform |
 | `name` | string | no | Job name (auto-generated if omitted on `add`) |
-| `schedule` | string | on `add` | Cron expression, ISO timestamp, relative time (`+10s`, `+5m`), or interval (`5m`) |
+| `schedule` | string | on `add` | Cron expression, ISO timestamp, relative time (`+10s`, `+5m`), interval (`5m`), or idle duration (`10m`) |
 | `prompt` | string | on `add` | Prompt text to execute when the job fires |
 | `jobId` | string | on `remove` / `enable` / `disable` / `update` | Target job |
-| `type` | `cron` \| `once` \| `interval` | no | Job type. Default `cron`; use `once` for relative times like `+10s` |
+| `type` | `cron` \| `once` \| `interval` \| `idle` | no | Job type. Default `cron`; use `once` for relative times like `+10s`, `idle` to fire after inactivity |
 | `description` | string | no | Free-form note |
 | `model` | non-empty string | no | If set, run the prompt in a fresh in-process agent session with this model instead of injecting into the current chat. Accepts fuzzy names (`haiku`, `sonnet`) or `provider/model-id`. To switch a job from subagent back to inline mode, remove and re-add it without `model` (no in-place clearing) |
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
@@ -139,6 +149,7 @@ The tool accepts multiple time formats:
 |--------|---------|------|-------------|
 | **Relative time** | `+5m`, `+1h`, `+30s`, `+2d` | once | Runs once after delay |
 | **Interval** | `5m`, `1h`, `30s`, `2d` | interval | Repeats at interval (max `24d`; use cron for longer) |
+| **Idle duration** | `10m`, `1h` | idle | Runs once after the agent has been idle that long (max `24d`) |
 | **ISO timestamp** | `2026-02-13T15:30:00Z` | once | Runs once at exact time |
 | **Cron expression** | `0 */5 * * * *` | cron | Runs on cron schedule |
 
@@ -236,6 +247,21 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 "execute every minute"
   → schedule="0 * * * * *", type=cron
 ```
+
+### Idle jobs
+
+```
+"after 15 minutes idle, summarise what changed today"
+  → schedule="15m", type=idle
+```
+
+An idle job fires once you have been inactive for its duration, as soon as the agent is idle. Idle means pi has fully settled (its `agent_settled` event): no run, retry, compaction or queued follow-up is in progress.
+
+The clock measures your inactivity. It starts at session start and restarts when you send a message (counted from when that turn settles), abort a run, run a `!` command, or close a dialog such as the `/schedule-prompt` menus. Turns started by scheduled jobs and open dialogs pause it but don't restart it, so a 5-minute heartbeat job can't keep a 15-minute idle job from firing. If an idle job comes due during such a turn, it fires right after that turn. A job you add or re-enable waits its full duration from that moment.
+
+It fires **once per idle stretch**. After it fires, it waits for your next message, `!` command or abort before it can fire again (closing a dialog only restarts the clock), so neither its own turn nor other scheduled jobs re-arm it. Reloading, resuming, forking or restarting pi starts a new stretch. Slash commands that open no dialog are not seen as activity. Combine it with `model` to run the maintenance in a subagent and keep your chat untouched.
+
+You don't need an idle job to keep the prompt cache warm. Pi does that natively (the `cacheWarming` setting, default `"idle"`).
 
 ### Heartbeat monitoring
 

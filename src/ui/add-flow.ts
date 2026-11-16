@@ -10,7 +10,7 @@ import { nanoid } from "nanoid";
 import { CronScheduler } from "../scheduler.js";
 import type { ScheduleSettings } from "../settings.js";
 import type { CronStorage } from "../storage.js";
-import type { CronJob } from "../types.js";
+import type { CronJob, CronJobType } from "../types.js";
 
 export async function runAddFlow(
   ctx: ExtensionCommandContext,
@@ -31,13 +31,15 @@ export async function runAddFlow(
     "Cron (recurring)",
     "Once (one-shot)",
     "Interval (periodic)",
+    "Idle (after inactivity)",
   ]);
   if (!typeChoice) return;
 
-  const typeMap: Record<string, "cron" | "once" | "interval"> = {
+  const typeMap: Record<string, CronJobType> = {
     "Cron (recurring)": "cron",
     "Once (one-shot)": "once",
     "Interval (periodic)": "interval",
+    "Idle (after inactivity)": "idle",
   };
   const jobType = typeMap[typeChoice];
 
@@ -45,6 +47,7 @@ export async function runAddFlow(
     cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily",
     once: "ISO timestamp or relative time (+10s, +5m, +1h)",
     interval: "Duration, e.g. '5m', '1h', '30s'",
+    idle: "Idle time before it fires once, e.g. '10m', '1h'",
   };
 
   // Re-prompt the schedule field on validation failure so the user
