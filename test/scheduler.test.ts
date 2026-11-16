@@ -284,6 +284,32 @@ describe("CronScheduler — subagent path marker delivery", () => {
     expect(errMsg.content[0].text).toBe("(subagent failed with empty error)");
   });
 
+describe("CronScheduler — once scheduling", () => {
+  it("schedules far-future one-shot jobs with Cron instead of a long timeout", () => {
+    const pi = makePi();
+    const target = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const job = exampleJob({
+      id: "far-once",
+      type: "once",
+      schedule: target.toISOString(),
+    });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx());
+
+    try {
+      scheduler.start();
+
+      const jobsMap = (scheduler as any).jobs as Map<string, unknown>;
+      const intervalsMap = (scheduler as any).intervals as Map<string, unknown>;
+      expect(jobsMap.has("far-once")).toBe(true);
+      expect(intervalsMap.has("far-once")).toBe(false);
+      expect(scheduler.getNextRun("far-once")?.toISOString()).toBe(target.toISOString());
+    } finally {
+      scheduler.stop();
+    }
+  });
+});
+
 describe("CronScheduler — start() recovery", () => {
   it("clears stale lastStatus=running on start (interrupted-by-shutdown recovery)", () => {
     // Simulates the previous session crashing/aborting mid-execution: storage
