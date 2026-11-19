@@ -101,6 +101,28 @@ export class CronScheduler {
     }
   }
 
+  /**
+   * Whether this scheduler still has something to fire or finish: a cron or
+   * one-shot with a future run, an interval, an idle job that can still fire
+   * in this idle stretch, or an in-flight subagent run. Synchronous and cheap;
+   * hosts (pi-web's session liveness registry) call it to decide whether an
+   * idle session may be closed.
+   *
+   * A one-shot's Cron stays in `jobs` after it fires, so crons count only
+   * while they have a next run. An idle job that already fired waits for the
+   * user's next input, and a present user keeps the session open anyway.
+   */
+  hasPendingWork(): boolean {
+    if (this.intervals.size > 0 || this.activeSubagents.size > 0) return true;
+    for (const cron of this.jobs.values()) {
+      if (cron.nextRun() !== null) return true;
+    }
+    for (const id of this.idleJobs.keys()) {
+      if (!this.firedThisStretch.has(id)) return true;
+    }
+    return false;
+  }
+
   /** Unbound jobs (no `session` field) load for everyone. */
   static isLoadedFor(job: CronJob, sessionId: string | undefined): boolean {
     return !job.session || job.session === sessionId;

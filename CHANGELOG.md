@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Scheduled jobs keep their session open in [pi-web](https://github.com/agegr/pi-web). pi-web closes a session after a period with no browser tab on it, and that shutdown stopped every timer this extension had armed, so a job due later never fired. The extension now registers with pi-web's session liveness registry (`Symbol.for("@agegr/pi-web/session-liveness/v1")`), which stops idle eviction while the session has a cron, interval or one-shot job still to run, an idle job that can still fire, or a separate-session run in flight. The registration is released on session shutdown and replaced on reload or resume. An explicit close in pi-web still wins. Under the pi CLI there is no registry, so nothing changes there.
+
 ## [0.5.1] - 2026-11-16
 
 ### Added

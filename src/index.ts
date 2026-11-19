@@ -12,6 +12,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OverlayHandle } from "@earendil-works/pi-tui";
 import { Text } from "@earendil-works/pi-tui";
+import { registerSessionLiveness } from "./liveness.js";
 import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
@@ -52,6 +53,9 @@ export default async function (pi: ExtensionAPI) {
   // session_start arrives without one; tracking here keeps that path from
   // dropping in-flight teardowns. Awaited, bounded, on session_shutdown.
   const pendingTeardowns = new Set<Promise<void>>();
+  // Releases this session's registration with a host's liveness registry
+  // (pi-web), which keeps an idle session open while jobs are pending.
+  let releaseLiveness: () => void = () => {};
   // Refreshed in initializeSession; mutated by Settings submenu. The tool and
   // widget read via closure so toggles take effect without re-registering.
   let settings: ScheduleSettings = {};
@@ -142,6 +146,9 @@ export default async function (pi: ExtensionAPI) {
     widget = new CronWidget(storage, scheduler, pi, isWidgetVisible, ctx.sessionManager.getSessionId());
 
     scheduler.start();
+    // Read through the closure: jobs added or removed later count without
+    // registering again.
+    releaseLiveness = registerSessionLiveness(ctx, () => scheduler?.hasPendingWork() ?? false);
 
     // Show widget
     if (isWidgetVisible()) {
@@ -150,6 +157,9 @@ export default async function (pi: ExtensionAPI) {
   };
 
   const cleanupSession = (ctx: any): void => {
+    releaseLiveness();
+    releaseLiveness = () => {};
+
     // Stop scheduler (timers clear synchronously; subagent teardown settles later)
     if (scheduler) {
       const stopped = scheduler.stop();

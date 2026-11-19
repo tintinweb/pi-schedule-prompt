@@ -192,6 +192,8 @@ Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new j
 
 **Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 
+**pi-web:** [pi-web](https://github.com/agegr/pi-web) normally closes a session a while after its last browser tab lets go of it. A session with pending jobs (a cron, interval or one-shot with a run ahead, an idle job that can still fire, or a separate-session run in flight) registers with pi-web's session liveness registry, so it stays open with no tab while the jobs are pending. It is released once they are done. A pi-web restart still closes it: the jobs come back when the session is next started.
+
 **Scheduler:**
 
 - Uses `croner` library for cron expressions and one-shots
