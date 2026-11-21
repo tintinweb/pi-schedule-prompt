@@ -449,19 +449,23 @@ export class CronScheduler {
     if (!fresh?.enabled) return;
     if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
 
-    console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
+    // Everything below must read from `fresh`, not the closure-captured `job`:
+    // a long-lived scheduler keeps firing the prompt/model it loaded at startup
+    // otherwise, so edits made in another session (or via the widget) are
+    // silently ignored until every session is restarted.
+    console.log(`Executing scheduled prompt: ${fresh.name} (${fresh.id})`);
 
-    if (job.model) {
-      this.executeJobInSubagent(job);
+    if (fresh.model) {
+      this.executeJobInSubagent(fresh);
       return;
     }
 
     try {
       // Update status to running
-      this.storage.updateJob(job.id, {
+      this.storage.updateJob(fresh.id, {
         lastStatus: "running",
       });
-      this.emitChange({ type: "fire", job });
+      this.emitChange({ type: "fire", job: fresh });
 
       // Visible-only marker. The renderer reads from `details`, so `content`
       // is intentionally empty — putting the prompt text in `content` would
@@ -475,11 +479,11 @@ export class CronScheduler {
         customType: "scheduled_prompt",
         content: [],
         display: true,
-        details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+        details: { jobId: fresh.id, jobName: fresh.name, prompt: fresh.prompt },
       });
 
       // Then send the actual prompt to the agent — this is the single LLM-visible delivery.
-      this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
+      this.pi.sendUserMessage(fresh.prompt, { deliverAs: "followUp" });
 
       // Update job execution stats.
       //
@@ -488,20 +492,20 @@ export class CronScheduler {
       // reading `job.runCount` yields a stale count, so incrementing it writes
       // the same value to storage on every fire and the counter never advances.
       // Re-read from storage to get the latest known count.
-      const nextRun = this.getNextRun(job.id);
-      const latest = this.storage.getJob(job.id);
-      const currentRunCount = latest?.runCount ?? job.runCount;
-      this.storage.updateJob(job.id, {
+      const nextRun = this.getNextRun(fresh.id);
+      const latest = this.storage.getJob(fresh.id);
+      const currentRunCount = latest?.runCount ?? fresh.runCount;
+      this.storage.updateJob(fresh.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "success",
         runCount: currentRunCount + 1,
         nextRun: nextRun?.toISOString(),
       });
 
-      this.emitChange({ type: "fire", job });
+      this.emitChange({ type: "fire", job: fresh });
     } catch (error) {
-      console.error(`Failed to execute job ${job.id}:`, error);
-      this.storage.updateJob(job.id, {
+      console.error(`Failed to execute job ${fresh.id}:`, error);
+      this.storage.updateJob(fresh.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "error",
       });

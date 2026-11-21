@@ -369,12 +369,82 @@ describe("CronScheduler — idle scheduling", () => {
     return { pi, storage, state, scheduler };
   }
 
+  // Storage that behaves like the on-disk store: every read and write goes
+  // through a clone. The in-memory harness used above shares object references
+  // between the store and the scheduler's closure, which masks the
+  // stale-job bug these tests are here to catch.
+  function makeDurableStorage(seedJobs: CronJob[] = []) {
+    const jobs = new Map<string, CronJob>(
+      seedJobs.map((j) => [j.id, structuredClone(j)]),
+    );
+    return {
+      hasJobWithName: (name: string) =>
+        Array.from(jobs.values()).some((j) => j.name === name),
+      addJob: (job: CronJob) => jobs.set(job.id, structuredClone(job)),
+      removeJob: (id: string) => jobs.delete(id),
+      updateJob: (id: string, partial: Partial<CronJob>) => {
+        const job = jobs.get(id);
+        if (!job) return false;
+        jobs.set(id, { ...structuredClone(job), ...structuredClone(partial) });
+        return true;
+      },
+      getJob: (id: string) => {
+        const job = jobs.get(id);
+        return job ? structuredClone(job) : undefined;
+      },
+      getAllJobs: () => Array.from(jobs.values()).map((j) => structuredClone(j)),
+      getStorePath: () => ":memory:",
+    } as any;
+  }
+
+  function setupDurable(jobs: CronJob[] = [idleJob()], sessionId?: string) {
+    const pi = makePi();
+    const storage = makeDurableStorage(jobs);
+    const { ctx, state } = idleCtx(sessionId);
+    const scheduler = new CronScheduler(storage, pi, ctx);
+    return { pi, storage, state, scheduler };
+  }
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("delivers the prompt currently in storage, not the one loaded at startup", () => {
+    // A scheduler that has been running since before an edit keeps the original
+    // job object in its croner/idle closure. Editing the job (widget, another
+    // session, a hand-edited store) must take effect on the next fire without
+    // restarting pi — otherwise a stored guard/instruction silently never runs.
+    const { pi, storage, scheduler } = setupDurable();
+    scheduler.start();
+
+    storage.updateJob("idle-1", { prompt: "do the NEW thing" });
+
+    vi.advanceTimersByTime(10 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledWith("do the NEW thing", { deliverAs: "followUp" });
+    scheduler.stop();
+  });
+
+  it("re-reads the model so a job converted to subagent mode runs as a subagent", async () => {
+    mockRunSubagentOnce.mockReset();
+    mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "subagent ran" } as any);
+    const { pi, storage, scheduler } = setupDurable();
+    scheduler.start();
+
+    storage.updateJob("idle-1", { model: "test-model", prompt: "run in subagent" });
+
+    vi.advanceTimersByTime(10 * MIN);
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    // The subagent path is fire-and-forget, so wait for the first dispatch; the
+    // idle job also re-arms, so don't assert an exact call count.
+    await vi.waitFor(() => expect(mockRunSubagentOnce.mock.calls.length).toBeGreaterThan(0));
+    expect(mockRunSubagentOnce.mock.calls[0][1]).toBe("run in subagent");
+    expect(mockRunSubagentOnce.mock.calls[0][2]).toBe("test-model");
+    scheduler.stop();
   });
 
   it("fires once the agent has been idle for the duration, counting from session start", () => {
