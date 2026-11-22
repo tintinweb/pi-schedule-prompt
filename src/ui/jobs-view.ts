@@ -202,6 +202,9 @@ export class JobsView implements Component {
       const next = !this.isSelectionForeign() ? this.scheduler.getNextRun(sel.id) : null;
       const meta = [
         `Type: ${sel.type}`,
+        sel.model
+          ? `Mode: separate (${sel.model}${sel.mcp ? ", mcp" : ""}${sel.notify ? ", notifies" : ""})`
+          : "Mode: this chat",
         next ? `Next: ${formatLocal(next)}` : null,
         sel.lastRun ? `Last: ${formatLocal(sel.lastRun)}` : null,
         `Runs: ${sel.runCount}`,
