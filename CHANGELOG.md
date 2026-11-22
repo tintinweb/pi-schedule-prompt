@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `mcp` option on `schedule_prompt` and `CronJob` (subagent jobs only): when `true`, the separate session loads pi's built-in `mcp`, `codemode`, and `tool-search` extensions, so it connects the servers from `mcp.json` and can call `mcp__<server>__<tool>` tools — native MCP, without loading the user's other extensions. pi's CLI injects its built-in extensions into `DefaultResourceLoader` via `extensionFactories`; a loader built without them loads none, so the subagent previously never connected MCP servers (the `extensions` option only covers discovered file/package extensions). An `mcp`-only job shares the parent's model runtime (the built-in factories register tools/commands, never providers); combined with `extensions`, the separate default runtime is kept. Grants the full builtin toolset, like `extensions`, because `tools` would hide MCP tools. Teardown is unchanged: `session_shutdown` stops the MCP servers the job started. Verified by an integration test against the real pi runtime with a stdio probe server
+
 ## [0.5.1] - 2026-11-16
 
 ### Added
