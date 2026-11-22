@@ -187,10 +187,11 @@ export class CronWidget {
       const countText = theme.fg("accent", (job.runCount ?? 0).toString().padEnd(3));
 
       // Model badge (only for jobs that run in a subagent).
-      // Trailing "!" marks jobs that wake the parent agent on completion (notify=true).
+      // "mcp" marks jobs whose separate session loads pi's native MCP servers;
+      // trailing "!" marks jobs that wake the parent agent on completion (notify=true).
+      const badgeText = `${job.model}${job.mcp ? " mcp" : ""}${job.notify ? "!" : ""}`;
       const modelBadge = job.model
-        ? " " + theme.fg("accent",
-            `[${job.model.length > 12 ? job.model.substring(0, 9) + "..." : job.model}${job.notify ? "!" : ""}]`)
+        ? " " + theme.fg("accent", `[${badgeText.length > 16 ? `${badgeText.substring(0, 13)}...` : badgeText}]`)
         : "";
 
       // Combine into a row with proper spacing

@@ -10,6 +10,9 @@ import {
 // Must be at file scope — vitest hoists vi.mock to the top automatically.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: vi.fn(),
+  createCodemodeExtension: vi.fn(() => () => {}),
+  createMcpExtension: vi.fn(() => () => {}),
+  createToolSearchExtension: vi.fn(() => () => {}),
   // Instantiated via `new DefaultResourceLoader(...)`, so the mock must be a
   // constructable function expression — an arrow function can't be `new`-ed.
   // biome-ignore lint/complexity/useArrowFunction: used as a constructor mock
@@ -347,6 +350,131 @@ describe("runSubagentOnce", () => {
     expect(sessionOptions.tools).toBeUndefined();
 
     expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("mcp:true only: passes builtin factories, keeps only builtin: extensions, full toolset, bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      mcp: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    // Built-ins need extension loading enabled: noExtensions strips them too.
+    expect(loaderOptions.noExtensions).toBe(false);
+    // pi's CLI injects its built-in extensions via extensionFactories; without
+    // them an SDK-style loader never loads native MCP.
+    expect(loaderOptions.extensionFactories).toHaveLength(3);
+    const builtinNames = loaderOptions.extensionFactories.map((f: { name: string }) => f.name);
+    expect(builtinNames).toEqual(["codemode", "tool-search", "mcp"]);
+    for (const factory of loaderOptions.extensionFactories) {
+      expect(factory.builtin).toBe(true);
+      expect(factory.replaceable).toBe(true);
+      expect(typeof factory.factory).toBe("function");
+    }
+
+    // The override keeps only built-in extensions: no recursion of this or
+    // other discovered extensions, just native MCP support.
+    expect(typeof loaderOptions.extensionsOverride).toBe("function");
+    const filtered = loaderOptions.extensionsOverride({
+      extensions: [
+        { path: "builtin:mcp" },
+        { path: "builtin:codemode" },
+        { path: "npm:pi-schedule-prompt" },
+        { path: "npm:pi-telegram" },
+      ],
+    });
+    expect(filtered.extensions.map((e: { path: string }) => e.path)).toEqual([
+      "builtin:mcp",
+      "builtin:codemode",
+    ]);
+
+    // MCP tools reach the model through codemode/tool_search activation, which
+    // requires the full toolset — `tools` would hide them.
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    // The MCP extension connects its servers on session_start (bindExtensions).
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("mcp:true shares the parent's model runtime when no user extensions load", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+    const fakeRuntime = {
+      getAuth: () => undefined,
+      getModel: () => undefined,
+      hasConfiguredAuth: () => true,
+      registerProvider: () => {},
+    };
+    const ctx = {
+      ...makeCtx(),
+      modelRegistry: {
+        find: () => MODELS[0],
+        getAvailable: () => MODELS,
+        runtime: fakeRuntime,
+      },
+    } as any;
+
+    await runSubagentOnce(ctx, "test prompt", MODELS[0].id, undefined, { mcp: true });
+
+    // Built-in factories register only tools/commands, never providers, so an
+    // mcp-only job keeps using the parent runtime (extension-registered
+    // providers and runtime-only API keys stay available).
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.modelRuntime).toBe(fakeRuntime);
+  });
+
+  it("mcp:true + extensions:['pkg']: override keeps both builtins and the named extension", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      mcp: true,
+      extensions: ["telegram"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(loaderOptions.extensionFactories).toHaveLength(3);
+
+    const filtered = loaderOptions.extensionsOverride({
+      extensions: [
+        { path: "builtin:mcp" },
+        { path: "builtin:tool-search" },
+        { path: "npm:pi-telegram" },
+        { path: "npm:pi-mcp-adapter" },
+      ],
+    });
+    expect(filtered.extensions.map((e: { path: string }) => e.path)).toEqual([
+      "builtin:mcp",
+      "builtin:tool-search",
+      "npm:pi-telegram",
+    ]);
+
+    // User extensions load → separate default runtime, full toolset, bindExtensions.
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.modelRuntime).toBeUndefined();
+    expect(sessionOptions.tools).toBeUndefined();
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("mcp:false/undefined: no builtin factories, no extensionsOverride (unchanged default)", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, { mcp: false });
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.extensionFactories).toBeUndefined();
+    expect(loaderOptions.extensionsOverride).toBeUndefined();
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 
   it("skills:[\"git\"]: filters skills, sets noSkills=false", async () => {

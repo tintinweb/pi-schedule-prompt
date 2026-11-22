@@ -1,7 +1,8 @@
 /**
  * Interactive add flow for `/schedule-prompt`.
  * Steps the user through name → type → schedule (with re-prompt on validation
- * failure) → prompt → scope → confirm. Saves and schedules the new job, or
+ * failure) → prompt → run mode (inline, or separate session with model and an
+ * MCP toggle) → scope → confirm. Saves and schedules the new job, or
  * returns silently on cancellation.
  */
 
@@ -10,6 +11,7 @@ import { nanoid } from "nanoid";
 import { CronScheduler } from "../scheduler.js";
 import type { ScheduleSettings } from "../settings.js";
 import type { CronStorage } from "../storage.js";
+import { describeAvailableModels, resolveModel } from "../subagent.js";
 import type { CronJob, CronJobType } from "../types.js";
 
 export async function runAddFlow(
@@ -70,6 +72,37 @@ export async function runAddFlow(
   const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
   if (!prompt) return;
 
+  // Where the prompt runs when the job fires. A separate session keeps this
+  // chat untouched; it needs a model, and can load pi's native MCP servers.
+  const RUN_INLINE = "In this chat — the prompt arrives here when it fires";
+  const RUN_SEPARATE = "Separate session — runs in the background under another model";
+  const runChoice = await ctx.ui.select("Run", [RUN_INLINE, RUN_SEPARATE]);
+  if (!runChoice) return;
+
+  let model: string | undefined;
+  let mcp: boolean | undefined;
+  if (runChoice === RUN_SEPARATE) {
+    // Re-prompt like the schedule step: an unknown model must not lose the
+    // answers already given. Accepts fuzzy names, validated against the same
+    // registry the scheduler will use when the job fires.
+    let modelPlaceholder = "Model for the separate session, e.g. 'haiku' or 'provider/model-id'";
+    while (true) {
+      const raw = await ctx.ui.input("Model", modelPlaceholder);
+      if (!raw) return;
+      const trimmed = raw.trim();
+      if (resolveModel(ctx.modelRegistry, trimmed)) {
+        model = trimmed;
+        break;
+      }
+      modelPlaceholder = `Unknown model '${trimmed}'. ${describeAvailableModels(ctx.modelRegistry)}`;
+    }
+
+    mcp = await ctx.ui.confirm(
+      "MCP",
+      "Load pi's native MCP servers (mcp.json) in the separate session?\nIt then gets the mcp__<server>__<tool> tools and the full builtin toolset.",
+    );
+  }
+
   // Last decision before save. Default option is listed first, picked up
   // from the global `defaultJobScope` setting — so hitting enter takes the
   // configured default.
@@ -85,9 +118,12 @@ export async function runAddFlow(
 
   const human = CronScheduler.describeSchedule(jobType, schedule);
   const scopeLabel = session ? "session-bound" : "shared (any pi here)";
+  const modeLabel = model
+    ? `separate session (${model}${mcp ? ", native MCP" : ""})`
+    : "this chat";
   const confirmed = await ctx.ui.confirm(
     "Confirm",
-    `Save "${name}"?\nSchedule: ${human}\nScope: ${scopeLabel}\nPrompt: ${prompt}`,
+    `Save "${name}"?\nSchedule: ${human}\nRun: ${modeLabel}\nScope: ${scopeLabel}\nPrompt: ${prompt}`,
   );
   if (!confirmed) return;
 
@@ -101,6 +137,8 @@ export async function runAddFlow(
     intervalMs,
     createdAt: new Date().toISOString(),
     runCount: 0,
+    model,
+    mcp: mcp || undefined,
     session,
   };
 

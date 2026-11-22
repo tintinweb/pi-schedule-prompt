@@ -105,6 +105,7 @@ export function createCronTool(
               notify: params.notify,
               extensions: params.extensions,
               skills: params.skills,
+              mcp: params.mcp,
               session,
             };
 
@@ -115,7 +116,7 @@ export function createCronTool(
             details.jobName = job.name;
 
             const modelLine = job.model
-              ? `\nModel: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
+              ? `\nModel: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""}${job.mcp ? ", mcp" : ""})`
               : "";
             return {
               content: [
@@ -261,6 +262,7 @@ export function createCronTool(
             if (params.notify !== undefined) updates.notify = params.notify;
             if (params.extensions !== undefined) updates.extensions = params.extensions;
             if (params.skills !== undefined) updates.skills = params.skills;
+            if (params.mcp !== undefined) updates.mcp = params.mcp;
 
             if (params.schedule) {
               // Same resolution rules as `add`: relative time (`+5m`) → ISO,
@@ -314,7 +316,7 @@ export function createCronTool(
               lines.push(`${status} ${job.name} (${job.id})`);
               lines.push(`  Type: ${job.type} | Schedule: ${displaySchedule(job)}`);
               if (job.model) {
-                lines.push(`  Model: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
+                lines.push(`  Model: ${job.model} (runs in separate session${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""}${job.mcp ? ", mcp" : ""})`);
               }
               lines.push(`  Prompt: ${job.prompt}`);
               lines.push(`  ${lastStr} ${nextStr ? `| ${nextStr}` : ""}`);
@@ -411,6 +413,7 @@ export function createCronTool(
             const tags = [];
             if (job.extensions) tags.push("extensions");
             if (job.skills) tags.push("skills");
+            if (job.mcp) tags.push("mcp");
             const tagStr = tags.length ? ", " + tags.join(" + ") : "";
             lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}${tagStr}`);
           }

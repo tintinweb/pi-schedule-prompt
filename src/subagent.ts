@@ -11,9 +11,13 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   type ExtensionContext,
   getAgentDir,
+  type InlineExtension,
   type ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -21,6 +25,21 @@ import {
 
 const ABORTED_BEFORE_START = "Subagent aborted before it started";
 const DEFAULT_TOOL_NAMES = ["bash", "read", "edit", "write", "grep", "find", "ls"];
+
+/**
+ * pi's CLI injects its built-in extensions into DefaultResourceLoader via
+ * extensionFactories (main.js: `[...builtInExtensions, ...]`); a loader built
+ * without them loads none, so an SDK-style subagent session never connects the
+ * servers from mcp.json. Mirror of pi's builtInExtensions (dist/extensions/index.js),
+ * minus llama.cpp: these three register only tools/commands, never model
+ * providers, and codemode/tool-search are what make non-`direct` MCP tools
+ * reachable (default exposure is `codemode`).
+ */
+const BUILTIN_EXTENSION_FACTORIES: InlineExtension[] = [
+  { name: "codemode", factory: createCodemodeExtension(), replaceable: true, builtin: true },
+  { name: "tool-search", factory: createToolSearchExtension(), replaceable: true, builtin: true },
+  { name: "mcp", factory: createMcpExtension(), replaceable: true, builtin: true },
+];
 
 export type SubagentResult =
   | { ok: true; text: string }
@@ -31,6 +50,9 @@ export interface RunSubagentOptions {
   extensions?: boolean | string[];
   /** If true, load all skills. If an array, only those named. Default undefined (none). */
   skills?: boolean | string[];
+  /** If true, load pi's built-in mcp/codemode/tool-search extensions so the
+   * subagent connects the servers from mcp.json (native MCP). Default false. */
+  mcp?: boolean;
 }
 
 export function resolveModel(
@@ -205,21 +227,32 @@ export async function runSubagentOnce(
 
     const extList = getNameList(options.extensions);
     const skillList = getNameList(options.skills);
+    const extEnabled = isEnabled(options.extensions);
+    const mcpEnabled = options.mcp === true;
+    // Extensions OR built-in MCP: either way the session binds extensions, so
+    // it needs the full toolset and extension teardown. `noExtensions` strips
+    // the built-ins from the enabled set too, so it must stay off for MCP.
+    const bindSessionResources = extEnabled || mcpEnabled;
 
     const loader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
       // Prevent recursive loading of this extension into the subagent.
       // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
-      noExtensions: !isEnabled(options.extensions),
+      noExtensions: !bindSessionResources,
       noSkills: !isEnabled(options.skills),
       noPromptTemplates: true,
       noThemes: true,
-      ...(extList && {
+      ...(mcpEnabled && { extensionFactories: BUILTIN_EXTENSION_FACTORIES }),
+      ...((extList || (mcpEnabled && !extEnabled)) && {
         extensionsOverride: (base) => ({
           ...base,
-          extensions: base.extensions.filter((ext) =>
-            extList.some((name) => ext.path.toLowerCase().includes(name.toLowerCase())),
+          extensions: base.extensions.filter(
+            (ext) =>
+              (mcpEnabled && ext.path.startsWith("builtin:")) ||
+              (extList
+                ? extList.some((name) => ext.path.toLowerCase().includes(name.toLowerCase()))
+                : false),
           ),
         }),
       }),
@@ -243,15 +276,17 @@ export async function runSubagentOnce(
       agentDir,
       sessionManager: SessionManager.inMemory(ctx.cwd),
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
-      // Share the parent's runtime only when the subagent loads no extensions:
-      // extension provider (un)registrations write into whatever runtime the
-      // session holds, so a shared one would let subagent extensions rewrite
-      // the parent's providers. With extensions loaded, the subagent gets pi's
-      // default runtime and its extensions register their own providers.
+      // Share the parent's runtime only when the subagent loads no user
+      // extensions: extension provider (un)registrations write into whatever
+      // runtime the session holds, so a shared one would let subagent extensions
+      // rewrite the parent's providers. With extensions loaded, the subagent gets
+      // pi's default runtime and its extensions register their own providers.
+      // The built-in mcp/codemode/tool-search factories register only tools and
+      // commands, never providers, so an mcp-only job still shares the runtime.
       // undefined → pi builds its default runtime from agentDir's auth.json/models.json.
-      modelRuntime: isEnabled(options.extensions) ? undefined : parentModelRuntime(ctx),
+      modelRuntime: extEnabled ? undefined : parentModelRuntime(ctx),
       model,
-      tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,
+      tools: bindSessionResources ? undefined : DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
@@ -263,7 +298,7 @@ export async function runSubagentOnce(
       // Checked before bindExtensions so an aborted job doesn't start (and
       // then shut down) its extensions. Teardown runs in finally.
       if (signal?.aborted) return { ok: false, error: ABORTED_BEFORE_START };
-      if (isEnabled(options.extensions)) {
+      if (bindSessionResources) {
         // Set before awaiting: bindExtensions delivers session_start first and
         // can still throw afterwards (resource discovery, system prompt rebuild),
         // and those extensions must then still get session_shutdown.

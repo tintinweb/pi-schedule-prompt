@@ -66,6 +66,8 @@ export interface CronJob {
   extensions?: boolean | string[];
   /** Only for jobs with `model` set. If true, loads all skills. If an array of skill names, only those skills. Default undefined (none). */
   skills?: boolean | string[];
+  /** Only for jobs with `model` set. If true, loads pi's built-in mcp/codemode/tool-search extensions, so the separate session connects the servers from mcp.json (native MCP). Default undefined (off). */
+  mcp?: boolean;
   /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
   session?: string;
 }
@@ -167,6 +169,12 @@ export const CronToolParams = Type.Object({
         description: "Only for jobs with 'model' set. The separate session loads only these skill names.",
       }),
     ])
+  ),
+  mcp: Type.Optional(
+    Type.Boolean({
+      description:
+        "Only for jobs with 'model' set. If true, the separate session loads pi's built-in MCP support (plus codemode and tool_search) and connects the servers from mcp.json, so it can use mcp__<server>__<tool> tools. Gives it the full builtin toolset. No-op for inline (no-model) jobs.",
+    })
   ),
 });
 
