@@ -348,6 +348,27 @@ export class CronScheduler {
   }
 
   /**
+   * Report a scheduler diagnostic without writing to stdout.
+   *
+   * In interactive (fullscreen TUI) mode pi does not capture extension
+   * `console.*` output: a raw stdout write lands at the terminal cursor —
+   * which the alt-screen renderer parks on the editor row — and is only
+   * repainted on the next state change, so the line sits on top of the
+   * editor until something (e.g. toggling a widget) forces a redraw.
+   * `ctx.ui.notify` instead renders in the chat in TUI mode and falls back
+   * to stderr in print/JSON modes. Tests pass a ctx without `ui`, so keep
+   * the console fallback for `hasUI === false`.
+   */
+  private report(level: "info" | "warning" | "error", message: string, ...args: unknown[]): void {
+    if (this.ctx.hasUI) {
+      this.ctx.ui.notify(message, level);
+    } else {
+      const fn = level === "error" ? console.error : level === "warning" ? console.warn : console.log;
+      fn(message, ...args);
+    }
+  }
+
+  /**
    * Schedule a single job
    */
   private scheduleJob(job: CronJob, idleSince?: number): void {
@@ -358,7 +379,7 @@ export class CronScheduler {
         // over-limit timer after 1 ms, so disable the job instead.
         if (job.intervalMs > MAX_INTERVAL_MS) {
           const error = `Duration ${job.schedule} exceeds the ~24-day timer limit; use a cron expression instead`;
-          console.warn(`Job ${job.id} (${job.name}): ${error}`);
+          this.report("warning", `Job ${job.id} (${job.name}): ${error}`);
           this.storage.updateJob(job.id, { enabled: false, lastStatus: "error" });
           this.emitChange({ type: "error", jobId: job.id, error });
           return;
@@ -391,7 +412,7 @@ export class CronScheduler {
           this.jobs.set(job.id, cron);
         } else {
           // Job is in the past - disable it and log warning
-          console.warn(`Job ${job.id} (${job.name}) scheduled for past time: ${job.schedule}`);
+          this.report("warning", `Job ${job.id} (${job.name}) scheduled for past time: ${job.schedule}`);
           this.storage.updateJob(job.id, { 
             enabled: false,
             lastStatus: "error" 
@@ -410,7 +431,7 @@ export class CronScheduler {
         this.jobs.set(job.id, cron);
       }
     } catch (error) {
-      console.error(`Failed to schedule job ${job.id}:`, error);
+      this.report("error", `Failed to schedule job ${job.id}:`, error);
       this.emitChange({
         type: "error",
         jobId: job.id,
@@ -449,7 +470,10 @@ export class CronScheduler {
     if (!fresh?.enabled) return;
     if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
 
-    console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
+    // No console.log here: in the fullscreen TUI a raw stdout write lands on
+    // the editor row and is not repainted while idle (see `report`). The
+    // `scheduled_prompt` custom message below already renders a visible
+    // "Scheduled: <name>" marker in the chat.
 
     if (job.model) {
       this.executeJobInSubagent(job);
@@ -500,7 +524,7 @@ export class CronScheduler {
 
       this.emitChange({ type: "fire", job });
     } catch (error) {
-      console.error(`Failed to execute job ${job.id}:`, error);
+      this.report("error", `Failed to execute job ${job.id}:`, error);
       this.storage.updateJob(job.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "error",
@@ -598,7 +622,7 @@ export class CronScheduler {
               notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
             );
           } catch (markerErr) {
-            console.error(`Failed to post subagent_done marker for job ${job.id}:`, markerErr);
+            this.report("error", `Failed to post subagent_done marker for job ${job.id}:`, markerErr);
           }
         } else {
           // Truncate the error the same way as the success snippet — verbose
@@ -629,13 +653,13 @@ export class CronScheduler {
               notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
             );
           } catch (markerErr) {
-            console.error(`Failed to post subagent_error marker for job ${job.id}:`, markerErr);
+            this.report("error", `Failed to post subagent_error marker for job ${job.id}:`, markerErr);
           }
         }
       } catch (error) {
         // Outer backstop: anything else (e.g. storage write failure) shouldn't
         // escape the IIFE as an unhandled rejection.
-        console.error(`Subagent completion handler failed for job ${job.id}:`, error);
+        this.report("error", `Subagent completion handler failed for job ${job.id}:`, error);
       }
     })();
     this.inflightSubagents.add(run);
