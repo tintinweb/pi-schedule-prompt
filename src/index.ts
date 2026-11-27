@@ -16,6 +16,7 @@ import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
+import type { CronJob } from "./types.js";
 import { runAddFlow } from "./ui/add-flow.js";
 import { CronWidget } from "./ui/cron-widget.js";
 import { JobsView } from "./ui/jobs-view.js";
@@ -164,16 +165,22 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
+  // A failed job is kept an hour so its error can be read, then swept.
+  const FAILED_KEEP_MS = 60 * 60 * 1000;
+  const SWEEP_EVERY_MS = 10 * 60 * 1000;
+  const failedLongAgo = (j: CronJob) =>
+    j.lastStatus === "error" && j.lastRun !== undefined && Date.now() - Date.parse(j.lastRun) > FAILED_KEEP_MS;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+
   const autoCleanupDisabledJobs = (ctx: any) => {
     // Only sweep our own (or unbound) disabled jobs — never another session's.
     if (!storage) return;
     const mySessionId = ctx.sessionManager.getSessionId();
     const disabledJobs = storage
       .getAllJobs()
-      .filter((j) => !j.enabled && CronScheduler.isLoadedFor(j, mySessionId));
+      .filter((j) => (!j.enabled || failedLongAgo(j)) && CronScheduler.isLoadedFor(j, mySessionId));
 
     if (disabledJobs.length > 0) {
-      console.log(`Auto-cleanup: removing ${disabledJobs.length} disabled job(s)`);
       for (const job of disabledJobs) {
         storage.removeJob(job.id);
       }
@@ -187,9 +194,13 @@ export default async function (pi: ExtensionAPI) {
       autoCleanupDisabledJobs(ctx);
     }
     initializeSession(ctx);
+    if (sweepTimer) clearInterval(sweepTimer);
+    sweepTimer = setInterval(() => autoCleanupDisabledJobs(ctx), SWEEP_EVERY_MS);
+    sweepTimer.unref?.();
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    if (sweepTimer) clearInterval(sweepTimer);
     autoCleanupDisabledJobs(ctx);
     cleanupSession(ctx);
     // pi exits right after session_shutdown handlers resolve, which would cut

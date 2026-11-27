@@ -449,8 +449,6 @@ export class CronScheduler {
     if (!fresh?.enabled) return;
     if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
 
-    console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
-
     if (job.model) {
       this.executeJobInSubagent(job);
       return;
