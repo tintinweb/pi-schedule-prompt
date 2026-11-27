@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Live store synchronization: each scheduler watches the shared store's parent directory for atomic-save replacements and reconciles local timers in every session without reload or polling. New enabled jobs arm, execution-defining edits reschedule, and removed/disabled/foreign jobs disarm, independently of widget visibility or whether the store started empty. Prompt/model-only edits do not reset timers; fire-time fresh reads supply the latest payload.
+- Per-job `singletonPreferTui` (missing means true), accepted by tool add/update and read fresh at fire time. True lets a TUI claim immediately while headless sessions yield 1.5s; false lets the first claimant of any mode win. `defaultSingletonPreferTui` (default true), also in the Settings submenu, is persisted when creating new singleton jobs and affects new jobs only.
+- Singleton workdir jobs: a job with `"singleton": true` (and no `session` binding) still loads in every pi session in the cwd, but exactly one session executes each scheduled run. At fire time each session atomically creates a per-tick claim file (`<agentDir>/schedule-prompts/claims/<projectKey>/<jobId>.<tick>.claim`, O_EXCL) and only the winner runs; the winner is recorded as `lastClaimBy` on the job. At-most-once per tick: a crashed winner forfeits that tick, and stale claims (older than 7 days) are pruned on session start. Set via the `schedule_prompt` tool's `singleton` parameter, the Jobs view's `s` key (now cycles session-bound → shared → singleton), the add flow's scope picker, `defaultSingleton` in `schedule-prompts-settings.json` (Settings submenu) for new jobs, or by hand-editing the store. Absent/false keeps the historical fire-in-every-session behavior; session-bound jobs ignore the flag.
+- Singleton TUI preference: an attached TUI (`ctx.mode === "tui"`) claims immediately while RPC/headless sessions yield for 1.5 seconds, so a due TUI gets the first opportunity. With several TUIs the first claimant wins; with no TUI the first headless claimant wins. No presence/heartbeat files or election registry are involved; the O_EXCL claim remains the only cross-session coordination and preserves exactly-once execution. Headless claims retain the original fire timestamp across the delay so staggered interval sessions cannot claim different buckets.
+
+### Fixed
+- Fire-time execution reads the current job from storage end to end (prompt, model, marker details, fire events, and run-count bookkeeping) instead of using the closure captured when the timer was armed.
+- Singleton one-shots are disabled only by the session that wins the claim, not unconditionally by every timer callback. Previously an earlier headless timer could write `enabled: false` before its grace delay, causing a reloaded TUI to skip its immediate claim and letting the headless session win.
+- Headless singleton claimants re-read and revalidate enabled/scope after the TUI grace delay, so jobs disabled, removed, or rebound during it do not fire.
+
 ## [0.5.1] - 2026-11-16
 
 ### Added

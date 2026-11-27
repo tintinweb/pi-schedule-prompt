@@ -19,6 +19,18 @@ export interface ScheduleSettings {
    * `"workdir"` omits the field so every pi in this cwd fires it.
    */
   defaultJobScope?: JobScope;
+  /**
+   * Default `singleton` for newly-created workdir jobs: when true, each
+   * scheduled run executes in exactly one session in the cwd (per-tick claim)
+   * instead of in every session. Default false. Session-bound jobs ignore it.
+   */
+  defaultSingleton?: boolean;
+  /**
+   * Default `singletonPreferTui` written when a new singleton workdir job is
+   * created. Default true. Changing it affects new jobs only; existing jobs
+   * keep their own value (and a missing value means true).
+   */
+  defaultSingletonPreferTui?: boolean;
 }
 
 const FILE = "schedule-prompts-settings.json";
@@ -30,6 +42,10 @@ function sanitize(raw: unknown): ScheduleSettings {
   if (typeof r.widgetVisible === "boolean") out.widgetVisible = r.widgetVisible;
   if (r.defaultJobScope === "session" || r.defaultJobScope === "workdir") {
     out.defaultJobScope = r.defaultJobScope;
+  }
+  if (typeof r.defaultSingleton === "boolean") out.defaultSingleton = r.defaultSingleton;
+  if (typeof r.defaultSingletonPreferTui === "boolean") {
+    out.defaultSingletonPreferTui = r.defaultSingletonPreferTui;
   }
   return out;
 }

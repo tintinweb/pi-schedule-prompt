@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { watchStore } from "./store-watcher.js";
 import type { CronJob, CronStore } from "./types.js";
 
 const LEGACY_FILE = "schedule-prompts.json";
@@ -198,5 +199,10 @@ export class CronStorage {
    */
   getStorePath(): string {
     return this.storePath;
+  }
+
+  /** Notify after this store is atomically replaced by any pi session. */
+  watch(onChange: () => void, onError?: (error: unknown) => void): () => void {
+    return watchStore(this.storePath, onChange, onError);
   }
 }

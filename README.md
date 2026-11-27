@@ -140,6 +140,8 @@ The widget displays below your editor (only when jobs exist):
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
 | `extensions` | boolean or string[] | no | Subagent-only. If `true`, loads all registered extensions; an array of package names loads only those. Unset or empty array = none (default). Enabling extensions also grants the subagent the full builtin toolset (not just the default read/write/bash set) — required for extension-provided tools to activate. No-op for inline (no-model) jobs |
 | `skills` | boolean or string[] | no | Subagent-only. If `true`, loads all skills; an array of skill names loads only those. Unset or empty array = none (default). No-op for inline (no-model) jobs |
+| `singleton` | boolean | no | Workdir jobs only (no `session` binding). If `true`, exactly one pi session in the cwd fires each scheduled run (per-tick claim file) instead of every session. Default `false` = fire in every session |
+| `singletonPreferTui` | boolean | no | Singleton workdir jobs only. `true` (default) lets a TUI claim immediately while headless sessions yield 1.5s; `false` lets the first claimant of any mode win. Per-job; the creation-time default is `defaultSingletonPreferTui` |
 
 ### Schedule Formats
 
@@ -189,6 +191,14 @@ Times are displayed in local time with their UTC offset. Cron expressions fire i
 By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi session in this project on this profile (useful for hand-edited project-wide cron), remove its `session` field from the project's job file (see **Storage**; `cwd` in the file identifies the project).
 
 Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
+
+**Live store synchronization:**
+
+Every scheduler watches the shared store's parent directory for atomic-save replacements. Tool, Jobs UI, and hand-edit changes therefore reconcile timers in every session without `/reload`: new enabled jobs are armed, schedule/scope changes are rescheduled, and removed/disabled/foreign jobs are disarmed. This works with the widget hidden or initially empty and does not use polling or `pi.events` (which is session-local). Prompt/model-only edits do not reset timers; `executeJob` re-reads the current job at fire time and uses its latest prompt, model, name, and options, with another enabled/scope check after the singleton headless grace delay.
+
+**Singleton workdir jobs (fire once per run):**
+
+A shared (workdir) job normally fires in *every* pi session in the cwd — two open pis means two runs per tick. Set `"singleton": true` on the job (via the `schedule_prompt` tool's `singleton` parameter, the Jobs view's `s` key cycling session → shared → singleton, or by hand-editing the store) and exactly **one** session in the cwd executes each scheduled run. With `singletonPreferTui: true` (the default), an attached TUI (`ctx.mode === "tui"`) immediately attempts the atomic per-tick claim (`<agentDir>/schedule-prompts/claims/<projectKey>/<jobId>.<tick>.claim`, O_EXCL) while RPC/headless sessions wait 1.5 seconds, giving a due TUI the first opportunity. With several TUIs the first claimant wins; with no TUI the first headless claimant after the grace period wins. Set `singletonPreferTui: false` to remove the delay and let the first claimant of any mode win. No presence or heartbeat files are needed, and the O_EXCL claim guarantees one execution even when sessions race. Semantics are at-most-once per tick: if the winning session crashes mid-run, that tick is skipped (the stale claim never matches a future tick; claims older than 7 days are pruned automatically). Absent/false keeps the historical fire-in-every-session behavior. Session-bound jobs ignore both flags. New jobs can default to singleton via `/schedule-prompt → Settings → Singleton workdir jobs` (`defaultSingleton` in the settings file). `singletonPreferTui` is a per-job value read fresh at fire time; `defaultSingletonPreferTui` (default true, with its own Settings toggle) is persisted when creating new singleton jobs and affects new jobs only. Existing jobs with no preference field behave as true.
 
 **Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 

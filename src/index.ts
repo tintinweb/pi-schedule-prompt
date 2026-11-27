@@ -110,6 +110,8 @@ export default async function (pi: ExtensionAPI) {
     () => storage,
     () => scheduler,
     () => settings.defaultJobScope ?? "session",
+    () => settings.defaultSingleton === true,
+    () => settings.defaultSingletonPreferTui !== false,
   );
   pi.registerTool(tool);
 
@@ -285,9 +287,13 @@ export default async function (pi: ExtensionAPI) {
           while (true) {
             const widgetState = isWidgetVisible() ? "shown" : "hidden";
             const bound = (settings.defaultJobScope ?? "session") === "session";
+            const singleton = settings.defaultSingleton === true;
+            const defaultPreferTui = settings.defaultSingletonPreferTui !== false;
             const choice = await ctx.ui.select("Settings", [
               `Widget visibility: ${widgetState}`,
               `Bind new jobs to session: ${bound ? "yes" : "no"}`,
+              `Singleton workdir jobs (new jobs fire once per tick): ${singleton ? "yes" : "no"}`,
+              `Default TUI preference for new singleton jobs: ${defaultPreferTui ? "yes" : "no"}`,
               "Back",
             ]);
             if (!choice || choice === "Back") return;
@@ -310,6 +316,28 @@ export default async function (pi: ExtensionAPI) {
               if (!persisted) {
                 ctx.ui.notify(
                   `Bind new jobs to session: ${next === "session" ? "yes" : "no"} (session only; ${notPersistedReason()})`,
+                  "warning",
+                );
+              }
+            } else if (choice.startsWith("Singleton workdir jobs")) {
+              // Affects newly-created workdir jobs only; existing jobs keep
+              // their `singleton` flag.
+              const next = !singleton;
+              settings = { ...settings, defaultSingleton: next };
+              const persisted = saveSettings(ctx.cwd, { defaultSingleton: next }, projectTrusted);
+              if (!persisted) {
+                ctx.ui.notify(
+                  `Singleton workdir jobs: ${next ? "yes" : "no"} (session only; ${notPersistedReason()})`,
+                  "warning",
+                );
+              }
+            } else if (choice.startsWith("Default TUI preference for new singleton jobs:")) {
+              const next = !defaultPreferTui;
+              settings = { ...settings, defaultSingletonPreferTui: next };
+              const persisted = saveSettings(ctx.cwd, { defaultSingletonPreferTui: next }, projectTrusted);
+              if (!persisted) {
+                ctx.ui.notify(
+                  `Default TUI preference for new singleton jobs: ${next ? "yes" : "no"} (session only; ${notPersistedReason()})`,
                   "warning",
                 );
               }

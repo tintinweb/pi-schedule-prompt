@@ -76,15 +76,22 @@ export async function runAddFlow(
   const defaultIsSession = (settings.defaultJobScope ?? "session") === "session";
   const SCOPE_SESSION = "Bind to this session — only this pi fires it";
   const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
-  const scopeChoice = await ctx.ui.select(
-    "Scope",
-    defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED] : [SCOPE_SHARED, SCOPE_SESSION],
-  );
+  const SCOPE_SINGLETON = "Shared, fire once — one pi in this cwd fires each run";
+  const scopeChoice = await ctx.ui.select("Scope", [
+    ...(defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED, SCOPE_SINGLETON] : [SCOPE_SHARED, SCOPE_SINGLETON, SCOPE_SESSION]),
+  ]);
   if (!scopeChoice) return;
   const session = scopeChoice === SCOPE_SESSION ? mySessionId : undefined;
+  // Session-bound jobs ignore singleton; workdir jobs default to the setting.
+  const singleton =
+    scopeChoice === SCOPE_SINGLETON ? true : scopeChoice === SCOPE_SHARED ? undefined : session ? undefined : (settings.defaultSingleton === true ? true : undefined);
 
   const human = CronScheduler.describeSchedule(jobType, schedule);
-  const scopeLabel = session ? "session-bound" : "shared (any pi here)";
+  const scopeLabel = session
+    ? "session-bound"
+    : singleton
+      ? "shared, fire once (any pi here, exactly one per run)"
+      : "shared (any pi here)";
   const confirmed = await ctx.ui.confirm(
     "Confirm",
     `Save "${name}"?\nSchedule: ${human}\nScope: ${scopeLabel}\nPrompt: ${prompt}`,
@@ -102,6 +109,8 @@ export async function runAddFlow(
     createdAt: new Date().toISOString(),
     runCount: 0,
     session,
+    singleton,
+    singletonPreferTui: singleton ? (settings.defaultSingletonPreferTui !== false) : undefined,
   };
 
   storage.addJob(job);

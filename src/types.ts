@@ -68,6 +68,21 @@ export interface CronJob {
   skills?: boolean | string[];
   /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
   session?: string;
+  /**
+   * Fire-once across sessions. Only meaningful for workdir jobs (no `session`):
+   * when true, every pi in the cwd loads the job but a per-tick claim file
+   * (see `claims.ts`) lets exactly one session execute each scheduled run.
+   * Absent/false keeps the historical behavior: every session fires it.
+   */
+  singleton?: boolean;
+  /**
+   * Per-job TUI preference for singleton workdir jobs. True (or absent)
+   * lets a TUI claim immediately while headless sessions yield; false lets
+   * every session claim immediately. Ignored for non-singleton/session jobs.
+   */
+  singletonPreferTui?: boolean;
+  /** Session id that won the last singleton claim (informational). */
+  lastClaimBy?: string;
 }
 
 /**
@@ -167,6 +182,18 @@ export const CronToolParams = Type.Object({
         description: "Only for jobs with 'model' set. The separate session loads only these skill names.",
       }),
     ])
+  ),
+  singleton: Type.Optional(
+    Type.Boolean({
+      description:
+        "Only for jobs without a session binding (workdir scope). If true, the job still loads in every pi session in this cwd, but exactly one session executes each scheduled run (per-tick claim file). Default false: every session fires it (may duplicate). Useful for jobs that must run just once per tick, e.g. a digest.",
+    })
+  ),
+  singletonPreferTui: Type.Optional(
+    Type.Boolean({
+      description:
+        "Only for singleton workdir jobs. If true (default), an interactive TUI claims immediately while RPC/headless sessions yield 1.5s so the TUI gets the first opportunity. If false, every session claims immediately and the first claimant of any mode wins. Ignored for non-singleton and session-bound jobs.",
+    })
   ),
 });
 

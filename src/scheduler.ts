@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, UIPromptKind } from "@earendil-works/pi-coding-agent";
 import { Cron } from "croner";
+import { pruneClaims, SINGLETON_HEADLESS_GRACE_MS, tryClaim } from "./claims.js";
 import type { CronStorage } from "./storage.js";
 import { runSubagentOnce, type SubagentResult } from "./subagent.js";
 import type { CronChangeEvent, CronJob, CronJobType } from "./types.js";
@@ -73,6 +74,9 @@ export class CronScheduler {
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
   private readonly ctx: ExtensionContext;
+  /** Timer-defining fields currently armed, used to ignore metadata saves. */
+  private armedSignatures = new Map<string, string>();
+  private unwatchStore?: () => void;
 
   constructor(storage: CronStorage, pi: ExtensionAPI, ctx: ExtensionContext) {
     this.storage = storage;
@@ -90,14 +94,60 @@ export class CronScheduler {
    */
   start(): void {
     const mySessionId = this.ctx.sessionManager.getSessionId();
-    for (const job of this.storage.getAllJobs()) {
+    // Housekeeping for singleton claim files (their ticks are in the past and
+    // can never be claimed again; this only reclaims disk).
+    pruneClaims(this.ctx.cwd);
+    const jobs = this.storage.getAllJobs();
+    for (const job of jobs) {
       if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
       if (job.lastStatus === "running") {
         this.storage.updateJob(job.id, { lastStatus: undefined });
       }
-      if (job.enabled) {
-        this.scheduleJob(job);
+    }
+    this.reconcileJobs(jobs);
+
+    // Tool/UI saves in any session replace the same atomic store. Watch its
+    // parent directory so every scheduler converges without reloads or polling.
+    if (!this.unwatchStore) {
+      try {
+        this.unwatchStore = this.storage.watch?.(
+          () => this.reconcileJobs(),
+          (error) => this.report("error", "Scheduled-prompt store watch failed:", error),
+        );
+      } catch (error) {
+        this.report("error", "Could not watch the scheduled-prompt store:", error);
       }
+    }
+  }
+
+  /** Only fields that change how a timer is armed belong in this signature.
+   *  Prompt/model are deliberately excluded: executeJob reads them fresh. */
+  private static timerSignature(job: CronJob): string {
+    return JSON.stringify([
+      job.type,
+      job.schedule,
+      job.intervalMs ?? null,
+      job.session ?? null,
+      job.singleton === true,
+    ]);
+  }
+
+  /** Make local timers match the shared store. Idempotent for every save,
+   *  including our own lastRun/runCount/lastClaimBy metadata writes. */
+  private reconcileJobs(jobs = this.storage.getAllJobs()): void {
+    const mySessionId = this.ctx.sessionManager.getSessionId();
+    const wanted = new Set<string>();
+    for (const job of jobs) {
+      if (!job.enabled || !CronScheduler.isLoadedFor(job, mySessionId)) continue;
+      wanted.add(job.id);
+      const signature = CronScheduler.timerSignature(job);
+      if (this.armedSignatures.get(job.id) === signature) continue;
+      this.updateJob(job.id, job);
+    }
+    for (const id of [...this.armedSignatures.keys()]) {
+      if (wanted.has(id)) continue;
+      this.unscheduleJob(id);
+      this.emitChange({ type: "update" });
     }
   }
 
@@ -117,6 +167,10 @@ export class CronScheduler {
    * processes.
    */
   stop(): Promise<void> {
+    this.unwatchStore?.();
+    this.unwatchStore = undefined;
+    this.armedSignatures.clear();
+
     // Stop all cron jobs
     for (const cron of this.jobs.values()) {
       cron.stop();
@@ -405,9 +459,14 @@ export class CronScheduler {
         if (targetDate.getTime() > Date.now()) {
           const cron = new Cron(targetDate, () => {
             this.executeJob(job);
-            // Auto-disable one-shot jobs after execution
-            this.storage.updateJob(job.id, { enabled: false });
-            this.emitChange({ type: "update", job: { ...job, enabled: false } });
+            // A singleton one-shot is disabled by executeJob after its claim
+            // succeeds. Disabling it here lets the first timer (possibly a
+            // delayed headless session) hide the job from every other session
+            // before they can claim — notably the immediately-claiming TUI.
+            if (!job.singleton || job.session) {
+              this.storage.updateJob(job.id, { enabled: false });
+              this.emitChange({ type: "update", job: { ...job, enabled: false } });
+            }
           });
           this.jobs.set(job.id, cron);
         } else {
@@ -438,6 +497,10 @@ export class CronScheduler {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+
+    if (this.jobs.has(job.id) || this.intervals.has(job.id) || this.idleJobs.has(job.id)) {
+      this.armedSignatures.set(job.id, CronScheduler.timerSignature(job));
+    }
   }
 
   /**
@@ -458,34 +521,83 @@ export class CronScheduler {
 
     this.clearIdleTimer(id);
     this.idleJobs.delete(id);
+    this.armedSignatures.delete(id);
   }
 
   /**
    * Execute a job's prompt
    */
+  /** `mode` exists on current pi; older type declarations omit it. Unknown
+   *  modes deliberately rank as non-TUI rather than guessing from hasUI (RPC
+   *  also has UI). */
+  private sessionMode(): string {
+    return (this.ctx as unknown as { mode?: string }).mode ?? "print";
+  }
+
   private async executeJob(job: CronJob): Promise<void> {
     // Re-read before firing — closure-captured `job` is stale if storage was
     // edited mid-tick (removed, disabled, or `session` rebound by hand-edit).
-    const fresh = this.storage.getJob(job.id);
+    let fresh = this.storage.getJob(job.id);
     if (!fresh?.enabled) return;
     if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
 
+    // Singleton workdir job: exactly one session in the cwd may fire this
+    // tick. The claim is keyed by the scheduled time, so every session firing
+    // the same tick contends on the same file and the O_EXCL create picks a
+    // single winner; losers skip silently. A crashed winner forfeits that
+    // tick (at-most-once) — the stale claim never matches a future tick.
+    if (fresh.singleton && !fresh.session) {
+      // Prefer an interactive TUI without any cross-session presence files:
+      // TUIs claim immediately; RPC/headless sessions yield briefly so a due
+      // TUI gets the first opportunity. With several TUIs the first one wins.
+      // The O_EXCL claim still guarantees exactly one execution in all cases.
+      // Preserve the original fire time across the headless delay: using the
+      // post-delay clock could put staggered sessions in different interval
+      // buckets and let the same scheduled run execute twice.
+      const firedAt = Date.now();
+      if (fresh.singletonPreferTui !== false && this.sessionMode() !== "tui") {
+        await new Promise<void>((resolve) => setTimeout(resolve, SINGLETON_HEADLESS_GRACE_MS));
+        // The store watcher may have disabled, removed, or rebound the job
+        // during the delay. Revalidate and use its latest payload before the
+        // claim; this also exits promptly after a TUI wins a one-shot.
+        const current = this.storage.getJob(fresh.id);
+        if (!current?.enabled) return;
+        if (!CronScheduler.isLoadedFor(current, this.ctx.sessionManager.getSessionId())) return;
+        fresh = current;
+      }
+      const claim = tryClaim(this.ctx.cwd, fresh, this.ctx.sessionManager.getSessionId(), firedAt);
+      if (!claim) return;
+      this.storage.updateJob(fresh.id, {
+        lastClaimBy: claim.sessionId,
+        // Only the winner disables a singleton one-shot. Losing sessions must
+        // leave it enabled until the election has had a chance to complete.
+        ...(fresh.type === "once" ? { enabled: false } : {}),
+      });
+      if (fresh.type === "once") {
+        this.emitChange({ type: "update", job: { ...fresh, enabled: false } });
+      }
+    }
+
+    // Everything below must read from `fresh`, not the closure-captured `job`:
+    // a long-lived scheduler keeps firing the prompt/model it loaded at startup
+    // otherwise, so edits made in another session (or via the widget) are
+    // silently ignored until every session is restarted.
     // No console.log here: in the fullscreen TUI a raw stdout write lands on
     // the editor row and is not repainted while idle (see `report`). The
     // `scheduled_prompt` custom message below already renders a visible
     // "Scheduled: <name>" marker in the chat.
 
-    if (job.model) {
-      this.executeJobInSubagent(job);
+    if (fresh.model) {
+      this.executeJobInSubagent(fresh);
       return;
     }
 
     try {
       // Update status to running
-      this.storage.updateJob(job.id, {
+      this.storage.updateJob(fresh.id, {
         lastStatus: "running",
       });
-      this.emitChange({ type: "fire", job });
+      this.emitChange({ type: "fire", job: fresh });
 
       // Visible-only marker. The renderer reads from `details`, so `content`
       // is intentionally empty — putting the prompt text in `content` would
@@ -499,11 +611,11 @@ export class CronScheduler {
         customType: "scheduled_prompt",
         content: [],
         display: true,
-        details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+        details: { jobId: fresh.id, jobName: fresh.name, prompt: fresh.prompt },
       });
 
       // Then send the actual prompt to the agent — this is the single LLM-visible delivery.
-      this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
+      this.pi.sendUserMessage(fresh.prompt, { deliverAs: "followUp" });
 
       // Update job execution stats.
       //
@@ -512,20 +624,20 @@ export class CronScheduler {
       // reading `job.runCount` yields a stale count, so incrementing it writes
       // the same value to storage on every fire and the counter never advances.
       // Re-read from storage to get the latest known count.
-      const nextRun = this.getNextRun(job.id);
-      const latest = this.storage.getJob(job.id);
-      const currentRunCount = latest?.runCount ?? job.runCount;
-      this.storage.updateJob(job.id, {
+      const nextRun = this.getNextRun(fresh.id);
+      const latest = this.storage.getJob(fresh.id);
+      const currentRunCount = latest?.runCount ?? fresh.runCount;
+      this.storage.updateJob(fresh.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "success",
         runCount: currentRunCount + 1,
         nextRun: nextRun?.toISOString(),
       });
 
-      this.emitChange({ type: "fire", job });
+      this.emitChange({ type: "fire", job: fresh });
     } catch (error) {
-      this.report("error", `Failed to execute job ${job.id}:`, error);
-      this.storage.updateJob(job.id, {
+      this.report("error", `Failed to execute job ${fresh.id}:`, error);
+      this.storage.updateJob(fresh.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "error",
       });
