@@ -69,10 +69,10 @@ export interface CronJob {
   /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
   session?: string;
   /**
-   * Fire-once across sessions. Only meaningful for workdir jobs (no `session`):
-   * when true, every pi in the cwd loads the job but a per-tick claim file
-   * (see `claims.ts`) lets exactly one session execute each scheduled run.
-   * Absent/false keeps the historical behavior: every session fires it.
+   * Fire once per scheduled occurrence across sessions. Supported for
+   * cron/once/interval workdir jobs (no `session`), never idle jobs.
+   * An O_EXCL claim (see `claims.ts`) elects one session; coordination errors
+   * fail closed. Absent/false keeps the historical every-session behavior.
    */
   singleton?: boolean;
   /**
@@ -183,10 +183,16 @@ export const CronToolParams = Type.Object({
       }),
     ])
   ),
+  scope: Type.Optional(
+    StringEnum(["session", "workdir"], {
+      description:
+        "Add only. 'session' binds the job to this pi; 'workdir' loads it in every pi in this cwd. If omitted, singleton=true implies workdir; otherwise the configured default scope applies. Use Jobs UI scope cycling to change an existing job's binding.",
+    })
+  ),
   singleton: Type.Optional(
     Type.Boolean({
       description:
-        "Only for jobs without a session binding (workdir scope). If true, the job still loads in every pi session in this cwd, but exactly one session executes each scheduled run (per-tick claim file). Default false: every session fires it (may duplicate). Useful for jobs that must run just once per tick, e.g. a digest.",
+        "Only for cron/once/interval jobs without a session binding (workdir scope). If true, exactly one session executes each scheduled occurrence (per-occurrence claim file). Explicit singleton=true without scope implies workdir. Unsupported for idle jobs and incompatible with session scope. Default false: every session fires it (may duplicate).",
     })
   ),
   singletonPreferTui: Type.Optional(

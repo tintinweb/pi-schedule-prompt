@@ -20,9 +20,9 @@ export interface ScheduleSettings {
    */
   defaultJobScope?: JobScope;
   /**
-   * Default `singleton` for newly-created workdir jobs: when true, each
-   * scheduled run executes in exactly one session in the cwd (per-tick claim)
-   * instead of in every session. Default false. Session-bound jobs ignore it.
+   * Default `singleton` for newly-created cron/once/interval workdir jobs:
+   * when true, each scheduled occurrence executes in one session (per-occurrence
+   * claim) instead of every session. Default false. Session-bound/idle jobs ignore it.
    */
   defaultSingleton?: boolean;
   /**

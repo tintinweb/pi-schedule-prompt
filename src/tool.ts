@@ -90,10 +90,21 @@ export function createCronTool(
             const schedule = validated.schedule;
             const intervalMs = validated.intervalMs;
 
+            const scope =
+              params.scope ?? (params.singleton === true ? "workdir" : getDefaultScope());
+            if (scope === "session" && params.singleton === true) {
+              throw new Error("Session-bound jobs cannot be singleton; use scope='workdir'.");
+            }
+            if (type === "idle" && params.singleton === true) {
+              throw new Error("Singleton idle jobs are unsupported; use cron, once, or interval.");
+            }
+
             const now = new Date().toISOString();
-            const session =
-              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
-            const singleton = session ? undefined : (params.singleton ?? getDefaultSingleton());
+            const session = scope === "session" ? ctx.sessionManager.getSessionId() : undefined;
+            const singleton =
+              session || type === "idle"
+                ? undefined
+                : (params.singleton ?? getDefaultSingleton());
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -253,6 +264,13 @@ export function createCronTool(
               throw new Error(
                 "'model' must be a non-empty string. To switch a job back to inline, remove and re-add it without 'model'."
               );
+            }
+
+            if (params.singleton === true && job.session) {
+              throw new Error("Session-bound jobs cannot be singleton; change scope in the Jobs UI first.");
+            }
+            if (params.singleton === true && job.type === "idle") {
+              throw new Error("Singleton idle jobs are unsupported; use cron, once, or interval.");
             }
 
             const updates: Partial<CronJob> = {};

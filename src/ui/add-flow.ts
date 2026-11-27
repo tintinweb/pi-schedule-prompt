@@ -77,14 +77,19 @@ export async function runAddFlow(
   const SCOPE_SESSION = "Bind to this session — only this pi fires it";
   const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
   const SCOPE_SINGLETON = "Shared, fire once — one pi in this cwd fires each run";
+  const supportsSingleton = jobType !== "idle";
+  const sharedScopes = supportsSingleton
+    ? !defaultIsSession && settings.defaultSingleton === true
+      ? [SCOPE_SINGLETON, SCOPE_SHARED]
+      : [SCOPE_SHARED, SCOPE_SINGLETON]
+    : [SCOPE_SHARED];
   const scopeChoice = await ctx.ui.select("Scope", [
-    ...(defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED, SCOPE_SINGLETON] : [SCOPE_SHARED, SCOPE_SINGLETON, SCOPE_SESSION]),
+    ...(defaultIsSession ? [SCOPE_SESSION, ...sharedScopes] : [...sharedScopes, SCOPE_SESSION]),
   ]);
   if (!scopeChoice) return;
   const session = scopeChoice === SCOPE_SESSION ? mySessionId : undefined;
-  // Session-bound jobs ignore singleton; workdir jobs default to the setting.
-  const singleton =
-    scopeChoice === SCOPE_SINGLETON ? true : scopeChoice === SCOPE_SHARED ? undefined : session ? undefined : (settings.defaultSingleton === true ? true : undefined);
+  // The configured default determines which explicit scope is listed first.
+  const singleton = scopeChoice === SCOPE_SINGLETON ? true : undefined;
 
   const human = CronScheduler.describeSchedule(jobType, schedule);
   const scopeLabel = session

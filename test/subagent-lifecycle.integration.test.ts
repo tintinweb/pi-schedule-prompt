@@ -113,6 +113,14 @@ describe("subagent lifecycle (real pi)", () => {
         Object.assign(jobs.get(id) as CronJob, p);
         return true;
       },
+      incrementRunCount: (id: string, nextRun?: string) => {
+        const current = jobs.get(id) as CronJob;
+        current.runCount++;
+        current.lastRun = new Date().toISOString();
+        current.lastStatus = "success";
+        current.nextRun = nextRun;
+        return true;
+      },
     } as any;
     const pi = { sendMessage() {}, sendUserMessage() {}, events: { emit() {}, on() {} } } as any;
     const scheduler = new CronScheduler(storage, pi, await makeCtx());

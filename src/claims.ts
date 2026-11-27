@@ -8,31 +8,26 @@ import type { CronJob } from "./types.js";
 /**
  * Cross-session "fire once" claims for singleton workdir jobs.
  *
- * A singleton job (no `session` field + `singleton: true`) is loaded by every
- * pi session in the cwd, so without coordination each session would fire it at
- * the same tick. Instead, at fire time each session tries to atomically create
- * a per-tick claim file with `fs.openSync(path, "wx")` (O_EXCL): exactly one
- * session in the workdir wins the create, and only the winner executes.
+ * Every contender for one scheduled occurrence attempts to create the same
+ * file with `wx` (O_EXCL). Only `EEXIST` is a normal lost election. Any other
+ * failure is thrown so the scheduler can fail closed instead of running the
+ * same occurrence in every session.
  *
- * The claim key contains the *scheduled* tick, not wall-clock now, so every
- * session firing the same cron tick contends on the same file, while later
- * ticks use fresh keys. Consequences:
- * - at-most-once per tick: if the winner crashes mid-run, that tick is simply
- *   skipped (no heartbeat, no lock stealing);
- * - stale claims are harmless (their key is in the past and never reused), so
- *   they only need opportunistic cleanup, not liveness checks.
- *
- * Claims live under `<agentDir>/schedule-prompts/claims/<projectKey>/`, next to
- * the project store, so pi profiles (PI_CODING_AGENT_DIR) never contend.
+ * Claims remain at-most-once: a crashed winner forfeits that occurrence and
+ * its claim is never stolen. Seven-day retention bounds how far a delayed
+ * contender may trail while retaining that guarantee. Claims are sharded by
+ * job and UTC occurrence hour so expired buckets can be removed wholesale.
  */
 
-/** Claims older than this are deleted on session start (housekeeping only —
- *  their tick is in the past and can never be claimed again). */
+/** Claims in buckets whose entire hour is older than this are pruned. */
 export const CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** How long RPC/headless sessions yield before claiming a singleton tick,
  *  giving an attached TUI the first opportunity. TUIs do not wait. */
 export const SINGLETON_HEADLESS_GRACE_MS = 1_500;
+
+const HOUR_MS = 60 * 60 * 1000;
+const HOUR_BUCKET = /^\d{4}-\d{2}-\d{2}T\d{2}$/;
 
 /** Claim file contents: who won and when (diagnostics / widget display). */
 export interface ClaimRecord {
@@ -43,17 +38,18 @@ export interface ClaimRecord {
   claimedAt: string;
 }
 
-/** Stable per-tick key shared by every session firing the same scheduled run. */
-export function claimTick(job: Pick<CronJob, "type" | "schedule" | "intervalMs">, now = Date.now()): string {
-  if (job.type === "once") return new Date(job.schedule).toISOString();
-  if (job.type === "interval" && job.intervalMs) {
-    return new Date(Math.floor(now / job.intervalMs) * job.intervalMs).toISOString();
-  }
-  // cron (and idle, which never reaches here): the current minute boundary.
-  // Cron fields have 1s resolution, but pi sessions fire within the same
-  // second-ish of the tick; flooring to the minute matches the cron schedule
-  // granularity and is identical across sessions in the same tick.
-  return new Date(Math.floor(now / 60_000) * 60_000).toISOString();
+function hash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Stable identity for the scheduled occurrence, not the callback wall clock. */
+export function claimTick(
+  job: Pick<CronJob, "type" | "schedule" | "intervalMs">,
+  occurrenceAt = Date.now(),
+): string {
+  // A one-shot's identity remains its target even if a stale callback races a
+  // schedule edit. Other supported types supply their armed occurrence.
+  return new Date(job.type === "once" ? new Date(job.schedule).getTime() : occurrenceAt).toISOString();
 }
 
 function claimDir(cwd: string): string {
@@ -61,59 +57,99 @@ function claimDir(cwd: string): string {
 }
 
 function claimPath(cwd: string, jobId: string, tick: string): string {
-  // tick is an ISO timestamp (contains ':'); hash it to keep the file name flat.
-  const tickHash = createHash("sha256").update(tick).digest("hex").slice(0, 16);
-  return path.join(claimDir(cwd), `${jobId}.${tickHash}.claim`);
+  // The ISO prefix is YYYY-MM-DDTHH. Hashing job/tick components avoids path
+  // traversal from hand-edited stores and keeps individual file names flat.
+  const hourBucket = tick.slice(0, 13);
+  return path.join(claimDir(cwd), hash(jobId), hourBucket, `${hash(tick)}.claim`);
 }
 
 /**
- * Try to claim `job`'s fire for this tick. Returns the claim record when this
- * session won the O_EXCL create, null when another session already holds it.
+ * Try to claim `job`'s scheduled occurrence. Returns the record only for this
+ * process's atomic win, null only when another process already claimed it.
+ * Coordination failures throw; executing without a claim would be unsafe.
  */
-export function tryClaim(cwd: string, job: CronJob, sessionId: string, now = Date.now()): ClaimRecord | null {
-  const tick = claimTick(job, now);
+export function tryClaim(
+  cwd: string,
+  job: CronJob,
+  sessionId: string,
+  occurrenceAt = Date.now(),
+): ClaimRecord | null {
+  const tick = claimTick(job, occurrenceAt);
   const record: ClaimRecord = {
     jobId: job.id,
     tick,
     sessionId,
     pid: process.pid,
-    claimedAt: new Date(now).toISOString(),
+    claimedAt: new Date().toISOString(),
   };
+  const file = claimPath(cwd, job.id, tick);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  let fd: number;
   try {
-    const dir = claimDir(cwd);
-    fs.mkdirSync(dir, { recursive: true });
-    // "wx": fail if the file exists — the atomic cross-process test-and-set.
-    const fd = fs.openSync(claimPath(cwd, job.id, tick), "wx");
-    try {
-      fs.writeFileSync(fd, JSON.stringify(record, null, 2), "utf-8");
-    } finally {
-      fs.closeSync(fd);
-    }
-    return record;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return null;
-    // Unwritable claim dir etc.: fail open — behave like a non-singleton job
-    // rather than silently never firing.
-    console.warn(`[pi-schedule-prompt] could not create claim for job ${job.id}:`, err);
-    return { ...record, stale: false } as ClaimRecord;
+    fd = fs.openSync(file, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
+  }
+  try {
+    fs.writeFileSync(fd, JSON.stringify(record, null, 2), "utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+  return record;
+}
+
+function pruneLegacyClaim(full: string, now: number): void {
+  try {
+    const st = fs.statSync(full);
+    if (now - st.mtimeMs > CLAIM_MAX_AGE_MS) fs.unlinkSync(full);
+  } catch {
+    // Raced with another session's prune — fine.
   }
 }
 
-/** Delete claim files older than CLAIM_MAX_AGE_MS. Best-effort housekeeping. */
-export function pruneClaims(cwd: string, now = Date.now()): void {
+function pruneJobDir(dir: string, now: number): void {
   try {
-    const dir = claimDir(cwd);
-    for (const entry of fs.readdirSync(dir)) {
-      if (!entry.endsWith(".claim")) continue;
-      const full = path.join(dir, entry);
-      try {
-        const st = fs.statSync(full);
-        if (now - st.mtimeMs > CLAIM_MAX_AGE_MS) fs.unlinkSync(full);
-      } catch {
-        // Raced with another session's prune — fine.
+    for (const bucket of fs.readdirSync(dir)) {
+      if (!HOUR_BUCKET.test(bucket)) continue;
+      const bucketStart = Date.parse(`${bucket}:00:00.000Z`);
+      if (!Number.isFinite(bucketStart)) continue;
+      // Do not remove a bucket until every claim it can contain is expired.
+      if (now - (bucketStart + HOUR_MS) > CLAIM_MAX_AGE_MS) {
+        try {
+          fs.rmSync(path.join(dir, bucket), { recursive: true, force: true });
+        } catch {
+          // Another pruner may have removed it first.
+        }
       }
     }
+    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
   } catch {
-    // No claims dir yet — nothing to prune.
+    // Raced with another session's prune — fine.
+  }
+}
+
+/** Delete expired hour buckets and legacy flat claims. Best-effort housekeeping. */
+export function pruneClaims(cwd: string, now = Date.now()): void {
+  const dir = claimDir(cwd);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return; // No claims dir yet — nothing to prune.
+  }
+
+  for (const entry of entries) {
+    const full = path.join(dir, entry);
+    try {
+      if (entry.endsWith(".claim")) {
+        pruneLegacyClaim(full, now);
+      } else if (fs.statSync(full).isDirectory()) {
+        pruneJobDir(full, now);
+      }
+    } catch {
+      // Raced with another session's prune — fine.
+    }
   }
 }

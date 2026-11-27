@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { withStoreLock } from "./storage-lock.js";
 import { watchStore } from "./store-watcher.js";
 import type { CronJob, CronStore } from "./types.js";
 
@@ -62,31 +63,45 @@ export class CronStorage {
    */
   migrateLegacy(trusted: boolean): LegacyMigration {
     if (!fs.existsSync(this.legacyStorePath)) return "none";
-    try {
-      let current: CronStore = { jobs: [], version: 1 };
-      if (fs.existsSync(this.storePath)) {
-        // Parse directly rather than via load(): a corrupt store must fail the
-        // import, not be overwritten with the legacy jobs.
-        current = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as CronStore;
-        if (current.legacyImported) return "none";
+    if (!trusted) {
+      try {
+        // Preserve the no-op result when migration already completed, without
+        // creating the agent store directory for an untrusted project.
+        if (fs.existsSync(this.storePath)) {
+          const current = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as CronStore;
+          if (current.legacyImported) return "none";
+        }
+        return "untrusted";
+      } catch (error) {
+        console.error(`Failed to migrate legacy scheduled prompts from ${this.legacyStorePath}:`, error);
+        return "failed";
       }
-      if (!trusted) return "untrusted";
-
-      const legacy = JSON.parse(fs.readFileSync(this.legacyStorePath, "utf-8")) as Partial<CronStore>;
-      if (!Array.isArray(legacy.jobs)) throw new Error("missing jobs array");
-      const known = new Set(current.jobs.map((j) => j.id));
-      const imported = legacy.jobs.filter((j) => !known.has(j.id));
-      this.save({
-        ...current,
-        version: current.version ?? legacy.version ?? 1,
-        jobs: [...current.jobs, ...imported],
-        legacyImported: true,
-      });
-      return "migrated";
-    } catch (error) {
-      console.error(`Failed to migrate legacy scheduled prompts from ${this.legacyStorePath}:`, error);
-      return "failed";
     }
+    return withStoreLock(this.storePath, () => {
+      try {
+        let current: CronStore = { jobs: [], version: 1 };
+        if (fs.existsSync(this.storePath)) {
+          // Parse directly rather than via load(): a corrupt store must fail the
+          // import, not be overwritten with the legacy jobs.
+          current = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as CronStore;
+          if (current.legacyImported) return "none";
+        }
+        const legacy = JSON.parse(fs.readFileSync(this.legacyStorePath, "utf-8")) as Partial<CronStore>;
+        if (!Array.isArray(legacy.jobs)) throw new Error("missing jobs array");
+        const known = new Set(current.jobs.map((j) => j.id));
+        const imported = legacy.jobs.filter((j) => !known.has(j.id));
+        this.saveUnlocked({
+          ...current,
+          version: current.version ?? legacy.version ?? 1,
+          jobs: [...current.jobs, ...imported],
+          legacyImported: true,
+        });
+        return "migrated";
+      } catch (error) {
+        console.error(`Failed to migrate legacy scheduled prompts from ${this.legacyStorePath}:`, error);
+        return "failed";
+      }
+    });
   }
 
   /**
@@ -111,12 +126,17 @@ export class CronStorage {
    * Save scheduled prompts to disk
    */
   save(store: CronStore): void {
+    withStoreLock(this.storePath, () => this.saveUnlocked(store));
+  }
+
+  /** Caller holds the store mutation lock. */
+  private saveUnlocked(store: CronStore): void {
+    const tempPath = `${this.storePath}.${process.pid}.${randomUUID()}.tmp`;
     try {
       fs.mkdirSync(this.storeDir, { recursive: true });
 
-      // Write atomically using temp file. `cwd` goes first so a hand-editor
-      // sees which project the file belongs to.
-      const tempPath = `${this.storePath}.tmp`;
+      // Atomic rename gives readers a complete old/new snapshot; unique temp
+      // names prevent unrelated processes from renaming each other's writes.
       const data: CronStore = {
         cwd: this.projectPath,
         version: store.version,
@@ -128,6 +148,8 @@ export class CronStorage {
     } catch (error) {
       console.error("Failed to save scheduled prompts:", error);
       throw error;
+    } finally {
+      fs.rmSync(tempPath, { force: true });
     }
   }
 
@@ -143,39 +165,60 @@ export class CronStorage {
    * Add a new job
    */
   addJob(job: CronJob): void {
-    const store = this.load();
-    store.jobs.push(job);
-    this.save(store);
+    withStoreLock(this.storePath, () => {
+      const store = this.load();
+      store.jobs.push(job);
+      this.saveUnlocked(store);
+    });
   }
 
   /**
    * Remove a job by ID
    */
   removeJob(id: string): boolean {
-    const store = this.load();
-    const initialLength = store.jobs.length;
-    store.jobs = store.jobs.filter((j) => j.id !== id);
+    return withStoreLock(this.storePath, () => {
+      const store = this.load();
+      const initialLength = store.jobs.length;
+      store.jobs = store.jobs.filter((j) => j.id !== id);
 
-    if (store.jobs.length < initialLength) {
-      this.save(store);
-      return true;
-    }
-    return false;
+      if (store.jobs.length < initialLength) {
+        this.saveUnlocked(store);
+        return true;
+      }
+      return false;
+    });
   }
 
   /**
    * Update a job by ID
    */
   updateJob(id: string, partial: Partial<CronJob>): boolean {
-    const store = this.load();
-    const job = store.jobs.find((j) => j.id === id);
+    return withStoreLock(this.storePath, () => {
+      const store = this.load();
+      const job = store.jobs.find((j) => j.id === id);
 
-    if (job) {
-      Object.assign(job, partial);
-      this.save(store);
+      if (job) {
+        Object.assign(job, partial);
+        this.saveUnlocked(store);
+        return true;
+      }
+      return false;
+    });
+  }
+
+  /** Atomically increment a job's counter and record a successful run. */
+  incrementRunCount(id: string, nextRun?: string): boolean {
+    return withStoreLock(this.storePath, () => {
+      const store = this.load();
+      const job = store.jobs.find((candidate) => candidate.id === id);
+      if (!job) return false;
+      job.runCount = (job.runCount ?? 0) + 1;
+      job.lastRun = new Date().toISOString();
+      job.lastStatus = "success";
+      job.nextRun = nextRun;
+      this.saveUnlocked(store);
       return true;
-    }
-    return false;
+    });
   }
 
   /**

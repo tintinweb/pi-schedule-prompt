@@ -26,6 +26,15 @@ function makeStorage(seedJobs: CronJob[] = []) {
       Object.assign(job, partial);
       return true;
     },
+    incrementRunCount: (id: string, nextRun?: string) => {
+      const job = jobs.get(id);
+      if (!job) return false;
+      job.runCount++;
+      job.lastRun = new Date().toISOString();
+      job.lastStatus = "success";
+      job.nextRun = nextRun;
+      return true;
+    },
     getJob: (id: string) => jobs.get(id),
     getAllJobs: () => Array.from(jobs.values()),
     getStorePath: () => ":memory:",
@@ -337,6 +346,37 @@ describe("CronScheduler — interval scheduling", () => {
   });
 });
 
+describe("CronScheduler — payload-only timer stability", () => {
+  it("keeps the original interval due time when its prompt is edited", () => {
+    vi.useFakeTimers();
+    const pi = makePi();
+    const j = exampleJob({
+      id: "interval-prompt-edit",
+      type: "interval",
+      schedule: "1s",
+      intervalMs: 1_000,
+    });
+    const storage = makeStorage([j]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx());
+
+    try {
+      vi.setSystemTime(400);
+      scheduler.start();
+      vi.advanceTimersByTime(600);
+      const timer = (scheduler as any).intervals.get(j.id);
+      storage.updateJob(j.id, { prompt: "new prompt" });
+      scheduler.updateJob(j.id, { ...storage.getJob(j.id) });
+
+      expect((scheduler as any).intervals.get(j.id)).toBe(timer);
+      vi.advanceTimersByTime(400);
+      expect(pi.sendUserMessage).toHaveBeenCalledWith("new prompt", { deliverAs: "followUp" });
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("CronScheduler — idle scheduling", () => {
   const MIN = 60 * 1000;
 
@@ -386,6 +426,18 @@ describe("CronScheduler — idle scheduling", () => {
         const job = jobs.get(id);
         if (!job) return false;
         jobs.set(id, { ...structuredClone(job), ...structuredClone(partial) });
+        return true;
+      },
+      incrementRunCount: (id: string, nextRun?: string) => {
+        const job = jobs.get(id);
+        if (!job) return false;
+        jobs.set(id, {
+          ...structuredClone(job),
+          runCount: job.runCount + 1,
+          lastRun: new Date().toISOString(),
+          lastStatus: "success",
+          nextRun,
+        });
         return true;
       },
       getJob: (id: string) => {
@@ -444,6 +496,24 @@ describe("CronScheduler — idle scheduling", () => {
     await vi.waitFor(() => expect(mockRunSubagentOnce.mock.calls.length).toBeGreaterThan(0));
     expect(mockRunSubagentOnce.mock.calls[0][1]).toBe("run in subagent");
     expect(mockRunSubagentOnce.mock.calls[0][2]).toBe("test-model");
+    scheduler.stop();
+  });
+
+  it("uses a freshly inlined idle job for prompt preflight coordination", () => {
+    const first = idleJob({ id: "idle-model-to-inline", model: "haiku" });
+    const second = idleJob({ id: "idle-inline-second", name: "second" });
+    const { pi, storage, scheduler } = setupDurable([first, second]);
+    scheduler.start();
+    storage.updateJob(first.id, { model: undefined });
+
+    vi.advanceTimersByTime(10 * MIN);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(first.prompt, { deliverAs: "followUp" });
+
+    scheduler.onBusy();
+    scheduler.onSettled();
+    vi.advanceTimersByTime(0);
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(2);
     scheduler.stop();
   });
 

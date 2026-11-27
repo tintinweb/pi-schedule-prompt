@@ -128,17 +128,17 @@ export class JobsView implements Component {
       return;
     }
     if (matchesKey(data, "s")) {
-      // Cycle this job's binding: session-bound → shared → singleton →
-      // session-bound. Singleton = shared but exactly one session in the cwd
-      // fires each run (per-tick claim). Other pi sessions already running in
-      // this cwd won't see the change until they restart; their in-memory
-      // schedulers are stale until session_start.
+      // Supported types cycle session → shared → singleton → session. Idle
+      // jobs have no shared occurrence to claim, so they cycle only
+      // session ↔ ordinary shared. Store watchers update other live sessions.
       if (this.isSelectionForeign()) return;
       const next = sel.session
         ? { session: undefined as string | undefined, singleton: false }
         : sel.singleton
           ? { session: this.mySessionId, singleton: undefined as boolean | undefined }
-          : { session: undefined as string | undefined, singleton: true };
+          : sel.type === "idle"
+            ? { session: this.mySessionId, singleton: undefined as boolean | undefined }
+            : { session: undefined as string | undefined, singleton: true };
       this.storage.updateJob(sel.id, next);
       this.scheduler.updateJob(sel.id, { ...sel, ...next });
       this.refresh();

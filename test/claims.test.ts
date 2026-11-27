@@ -1,9 +1,20 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLAIM_MAX_AGE_MS, claimTick, pruneClaims, tryClaim } from "../src/claims.js";
 import { CronScheduler } from "../src/scheduler.js";
+import { projectKey } from "../src/storage.js";
 import type { CronJob } from "../src/types.js";
 
 // Claims resolve their directory from PI_CODING_AGENT_DIR, so point it at a
@@ -18,6 +29,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
   rmSync(agentDir, { recursive: true, force: true });
@@ -37,61 +50,135 @@ function job(overrides: Partial<CronJob> = {}): CronJob {
   };
 }
 
+function claimFiles(dir = join(agentDir, "schedule-prompts", "claims")): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    return entry.isDirectory() ? claimFiles(full) : [full];
+  });
+}
+
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ["-e", ""]);
+  const pid = child.pid!;
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", () => resolve());
+  });
+  return pid;
+}
+
 describe("claimTick", () => {
-  it("floors cron ticks to the minute so all sessions in a tick share a key", () => {
+  it("preserves distinct second-resolution cron occurrences", () => {
     const j = job({ type: "cron" });
-    const t1 = claimTick(j, Date.UTC(2026, 10, 24, 15, 0, 0, 123));
-    const t2 = claimTick(j, Date.UTC(2026, 10, 24, 15, 0, 59, 999));
-    expect(t1).toBe(t2);
-    expect(claimTick(j, Date.UTC(2026, 10, 24, 15, 1, 0, 0))).not.toBe(t1);
+    const first = Date.UTC(2026, 10, 24, 15, 0, 1);
+    const second = Date.UTC(2026, 10, 24, 15, 0, 2);
+    expect(claimTick(j, first)).toBe("2026-11-24T15:00:01.000Z");
+    expect(claimTick(j, second)).toBe("2026-11-24T15:00:02.000Z");
   });
 
-  it("uses the target date for once jobs and the interval bucket for interval jobs", () => {
-    expect(claimTick(job({ type: "once", schedule: "2026-12-01T10:00:00.000Z" }))).toBe(
-      "2026-12-01T10:00:00.000Z",
+  it("uses the supplied delayed occurrence instead of rebucketing wall-clock time", () => {
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 30);
+    expect(claimTick(job({ type: "interval", intervalMs: 1_000 }), occurrence)).toBe(
+      "2026-11-24T15:00:30.000Z",
     );
-    const j = job({ type: "interval", schedule: "5m", intervalMs: 300_000 });
-    expect(claimTick(j, Date.UTC(2026, 10, 24, 15, 3, 10, 0))).toBe(
-      new Date(Date.UTC(2026, 10, 24, 15, 0, 0, 0)).toISOString(),
-    );
+  });
+
+  it("uses the target date for once jobs and rejects invalid occurrence timestamps", () => {
+    expect(
+      claimTick(
+        job({ type: "once", schedule: "2026-12-01T10:00:00.000Z" }),
+        Date.UTC(2027, 0, 1),
+      ),
+    ).toBe("2026-12-01T10:00:00.000Z");
+    expect(() => claimTick(job(), Number.NaN)).toThrow(RangeError);
   });
 });
 
 describe("tryClaim / pruneClaims", () => {
-  it("lets exactly one of two claimants win the same tick", () => {
+  it("lets exactly one claimant win an occurrence and a different occurrence win separately", () => {
     const j = job();
-    const now = Date.UTC(2026, 10, 24, 15, 0, 5, 0);
-    const first = tryClaim("/proj", j, "session-A", now);
-    const second = tryClaim("/proj", j, "session-B", now);
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 5);
+    const first = tryClaim("/proj", j, "session-A", occurrence);
+    const second = tryClaim("/proj", j, "session-B", occurrence);
     expect(first).not.toBeNull();
     expect(first!.sessionId).toBe("session-A");
     expect(second).toBeNull();
-    // A different tick is a different claim — both can win.
-    const nextTick = tryClaim("/proj", j, "session-B", now + 60_000);
-    expect(nextTick).not.toBeNull();
+    expect(tryClaim("/proj", j, "session-B", occurrence + 1_000)).not.toBeNull();
   });
 
-  it("pruneClaims removes only stale claim files", () => {
+  it("records actual claim time rather than the scheduled occurrence", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-24T15:01:00.000Z"));
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+
+    const claim = tryClaim("/proj", job(), "session-A", occurrence);
+
+    expect(claim).toMatchObject({
+      tick: "2026-11-24T15:00:00.000Z",
+      claimedAt: "2026-11-24T15:01:00.000Z",
+    });
+  });
+
+  it("never steals an existing claim based on its owner's liveness", async () => {
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 5);
+    expect(tryClaim("/proj", job(), "session-A", occurrence)).not.toBeNull();
+    const file = claimFiles()[0];
+    const record = JSON.parse(readFileSync(file, "utf-8"));
+    record.pid = await exitedPid();
+    writeFileSync(file, JSON.stringify(record));
+
+    expect(tryClaim("/proj", job(), "session-B", occurrence)).toBeNull();
+  });
+
+  it("throws coordination errors instead of electing every caller", () => {
+    const notADirectory = join(agentDir, "agent-dir-is-a-file");
+    writeFileSync(notADirectory, "x");
+    process.env.PI_CODING_AGENT_DIR = notADirectory;
+
+    expect(() => tryClaim("/proj", job(), "session-A", Date.now())).toThrow();
+    expect(() => tryClaim("/proj", job(), "session-B", Date.now())).toThrow();
+  });
+
+  it("prunes whole expired hour shards while retaining current claims", () => {
     const j = job();
-    const now = Date.now();
-    tryClaim("/proj", j, "session-A", now);
-    tryClaim("/proj", j, "session-A", now + 60_000);
-    const dir = join(agentDir, "schedule-prompts", "claims");
-    const projDir = readdirSync(dir)[0];
-    const files = readdirSync(join(dir, projDir));
-    expect(files).toHaveLength(2);
-    // Age the first claim file beyond the max age.
-    const stale = new Date(now - CLAIM_MAX_AGE_MS - 1000);
-    utimesSync(join(dir, projDir, files[0]), stale, stale);
-    pruneClaims("/proj", now);
-    expect(readdirSync(join(dir, projDir))).toHaveLength(1);
-    // And the whole claims tree is gone after pruning everything.
-    for (const f of readdirSync(join(dir, projDir))) {
-      utimesSync(join(dir, projDir, f), stale, stale);
+    const now = Date.UTC(2026, 10, 24, 15, 30);
+    const expired = now - CLAIM_MAX_AGE_MS - 2 * 60 * 60 * 1000;
+    const current = tryClaim("/proj", j, "session-A", now)!;
+    for (let index = 0; index < 20; index++) {
+      expect(tryClaim("/proj", j, "session-A", expired + index * 1_000)).not.toBeNull();
     }
+    const before = claimFiles();
+    const currentPath = before.find(
+      (file) => JSON.parse(readFileSync(file, "utf-8")).tick === current.tick,
+    )!;
+    const expiredPath = before.find((file) => file !== currentPath)!;
+    const expiredBucket = dirname(expiredPath);
+
     pruneClaims("/proj", now);
-    expect(readdirSync(join(dir, projDir))).toHaveLength(0);
-    expect(existsSync(join(dir, projDir))).toBe(true);
+
+    expect(claimFiles()).toEqual([currentPath]);
+    expect(existsSync(expiredBucket)).toBe(false);
+  });
+
+  it("removes empty job shard directories and legacy stale flat claims", () => {
+    const now = Date.UTC(2026, 10, 24, 15, 30);
+    const expired = now - CLAIM_MAX_AGE_MS - 2 * 60 * 60 * 1000;
+    expect(tryClaim("/proj", job(), "session-A", expired)).not.toBeNull();
+    const expiredPath = claimFiles()[0];
+    const jobDir = dirname(dirname(expiredPath));
+    const projectDir = join(agentDir, "schedule-prompts", "claims", projectKey("/proj"));
+    const legacy = join(projectDir, "legacy.claim");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(legacy, "{}");
+    const stale = new Date(now - CLAIM_MAX_AGE_MS - 1_000);
+    utimesSync(legacy, stale, stale);
+
+    pruneClaims("/proj", now);
+
+    expect(existsSync(jobDir)).toBe(false);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(projectDir)).toBe(true);
   });
 });
 
@@ -121,6 +208,16 @@ describe("CronScheduler singleton fire-once", () => {
         const j = jobs.get(id);
         if (!j) return false;
         Object.assign(j, partial);
+        notify();
+        return true;
+      },
+      incrementRunCount: (id: string, nextRun?: string) => {
+        const j = jobs.get(id);
+        if (!j) return false;
+        j.runCount++;
+        j.lastRun = new Date().toISOString();
+        j.lastStatus = "success";
+        j.nextRun = nextRun;
         notify();
         return true;
       },
@@ -354,7 +451,7 @@ describe("CronScheduler singleton fire-once", () => {
     }
   });
 
-  it("headless delay keeps the original interval tick key", async () => {
+  it("headless delay preserves each supplied interval occurrence", async () => {
     const cwd = "/proj-headless-interval-tick";
     const j = job({ type: "interval", schedule: "1s", intervalMs: 1_000, singleton: true });
     const storage = makeSharedStorage([j]);
@@ -373,7 +470,8 @@ describe("CronScheduler singleton fire-once", () => {
       const runA = (schedA as any).executeJob(j) as Promise<void>;
       await vi.advanceTimersByTimeAsync(200);
       const runB = (schedB as any).executeJob(j) as Promise<void>;
-      // A's grace expires at 1900ms; B's at 2100ms (the next interval bucket).
+      // A and B supply different occurrences. Occurrence-based claims must not
+      // coalesce them merely because the old wall-clock bucket matched.
       await vi.advanceTimersByTimeAsync(1_300);
       await vi.advanceTimersByTimeAsync(200);
       await Promise.all([runA, runB]);
@@ -381,7 +479,7 @@ describe("CronScheduler singleton fire-once", () => {
       vi.useRealTimers();
     }
 
-    expect(sentA.length + sentB.length).toBe(1);
+    expect(sentA.length + sentB.length).toBe(2);
   });
 
   it("lets a reloaded TUI win a singleton one-shot armed earlier by headless", async () => {
@@ -480,6 +578,399 @@ describe("CronScheduler singleton fire-once", () => {
     } finally {
       await scheduler.stop();
     }
+  });
+
+  it("does not execute after stop during the singleton headless grace", async () => {
+    const cwd = "/proj-stop-during-grace";
+    const j = job({ singleton: true });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    const markers: unknown[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    pi.sendMessage = (...args: unknown[]) => markers.push(args);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("headless", cwd, "rpc"));
+
+    vi.useFakeTimers();
+    try {
+      const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+      vi.setSystemTime(occurrence);
+      const running = (scheduler as any).executeJob(j, occurrence) as Promise<void>;
+      await scheduler.stop();
+      await vi.advanceTimersByTimeAsync(1_500);
+      await running;
+      expect(sent).toHaveLength(0);
+      expect(markers).toHaveLength(0);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("does not execute a one-shot rescheduled during the headless grace", async () => {
+    const cwd = "/proj-reschedule-during-grace";
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+    const j = job({
+      type: "once",
+      schedule: new Date(occurrence).toISOString(),
+      singleton: true,
+    });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("headless", cwd, "rpc"));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(occurrence);
+      const running = (scheduler as any).executeJob(j, occurrence) as Promise<void>;
+      storage.updateJob(j.id, { schedule: new Date(occurrence + 60_000).toISOString() });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await running;
+      expect(sent).toHaveLength(0);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("does not claim when singleton is disabled during the headless grace", async () => {
+    const cwd = "/proj-unsingleton-during-grace";
+    const j = job({ singleton: true });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("headless", cwd, "rpc"));
+
+    vi.useFakeTimers();
+    try {
+      const occurrence = Date.now();
+      const running = (scheduler as any).executeJob(j, occurrence) as Promise<void>;
+      storage.updateJob(j.id, { singleton: false });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await running;
+      expect(sent).toHaveLength(0);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("does not execute after the job is rebound during the headless grace", async () => {
+    const cwd = "/proj-rebind-during-grace";
+    const j = job({ singleton: true });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("headless", cwd, "rpc"));
+
+    vi.useFakeTimers();
+    try {
+      const running = (scheduler as any).executeJob(j, Date.now()) as Promise<void>;
+      storage.updateJob(j.id, { session: "another-session" });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await running;
+      expect(sent).toHaveLength(0);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("contains a storage failure after claiming and records an error without executing", async () => {
+    const cwd = "/proj-post-claim-storage-error";
+    const j = job({ singleton: true, singletonPreferTui: false });
+    const storage = makeSharedStorage([j]);
+    const update = storage.updateJob;
+    let first = true;
+    storage.updateJob = (id: string, partial: Partial<CronJob>) => {
+      if (first) {
+        first = false;
+        throw new Error("store write failed");
+      }
+      return update(id, partial);
+    };
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A", cwd));
+
+    await expect((scheduler as any).executeJob(j, Date.now())).resolves.toBeUndefined();
+
+    expect(sent).toHaveLength(0);
+    expect(storage.getJob(j.id)!.lastStatus).toBe("error");
+  });
+
+  it("fails closed and records an error when claim coordination is unavailable", async () => {
+    const cwd = "/proj-claim-coordination-error";
+    const j = job({ singleton: true, singletonPreferTui: false });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const notADirectory = join(agentDir, "not-a-directory");
+    writeFileSync(notADirectory, "x");
+    process.env.PI_CODING_AGENT_DIR = notADirectory;
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A", cwd));
+
+    await expect((scheduler as any).executeJob(j, Date.now())).resolves.toBeUndefined();
+
+    expect(sent).toHaveLength(0);
+    expect(storage.getJob(j.id)!.lastStatus).toBe("error");
+  });
+
+  it("disables a hand-edited singleton idle job instead of executing it", async () => {
+    const cwd = "/proj-singleton-idle";
+    const j = job({ type: "idle", schedule: "1s", intervalMs: 1_000, singleton: true });
+    const storage = makeSharedStorage([j]);
+    const scheduler = new CronScheduler(storage, makePi(), makeCtx("session-A", cwd, "tui"));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    scheduler.start();
+
+    expect(storage.getJob(j.id)).toMatchObject({ enabled: false, lastStatus: "error" });
+    await scheduler.stop();
+  });
+
+  it("uses the armed cron occurrence across a delayed headless claim", async () => {
+    const cwd = "/proj-delayed-cron-occurrence";
+    const j = job({ singleton: true });
+    const storage = makeSharedStorage([j]);
+    const sentTui: string[] = [];
+    const sentHeadless: string[] = [];
+    const piTui = makePi();
+    const piHeadless = makePi();
+    piTui.sendUserMessage = (p: string) => sentTui.push(p);
+    piHeadless.sendUserMessage = (p: string) => sentHeadless.push(p);
+    const tui = new CronScheduler(storage, piTui, makeCtx("tui", cwd, "tui"));
+    const headless = new CronScheduler(storage, piHeadless, makeCtx("headless", cwd, "rpc"));
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(occurrence);
+      await (tui as any).executeJob(j, occurrence);
+      vi.setSystemTime(occurrence + 61_000);
+      const delayed = (headless as any).executeJob(j, occurrence) as Promise<void>;
+      await vi.advanceTimersByTimeAsync(1_500);
+      await delayed;
+      expect(sentTui.length + sentHeadless.length).toBe(1);
+    } finally {
+      await tui.stop();
+      await headless.stop();
+    }
+  });
+
+  it("fires distinct every-second cron occurrences", async () => {
+    const cwd = "/proj-every-second-cron";
+    const j = job({ schedule: "* * * * * *", singleton: true, singletonPreferTui: false });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("tui", cwd, "tui"));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-24T15:00:00.000Z"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(sent).toHaveLength(3);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("aligns staggered singleton interval schedulers to shared occurrences", async () => {
+    const cwd = "/proj-aligned-singleton-interval";
+    const j = job({
+      type: "interval",
+      schedule: "1s",
+      intervalMs: 1_000,
+      singleton: true,
+      singletonPreferTui: false,
+    });
+    const storage = makeSharedStorage([j]);
+    const sentA: string[] = [];
+    const sentB: string[] = [];
+    const piA = makePi();
+    const piB = makePi();
+    piA.sendUserMessage = (p: string) => sentA.push(p);
+    piB.sendUserMessage = (p: string) => sentB.push(p);
+    const schedA = new CronScheduler(storage, piA, makeCtx("session-A", cwd, "tui"));
+    const schedB = new CronScheduler(storage, piB, makeCtx("session-B", cwd, "tui"));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(400);
+      schedA.start();
+      await vi.advanceTimersByTimeAsync(200);
+      schedB.start();
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(sentA.length + sentB.length).toBe(2);
+    } finally {
+      await schedA.stop();
+      await schedB.stop();
+    }
+  });
+
+  it("keeps non-singleton intervals relative to each scheduler's arming time", async () => {
+    const cwd = "/proj-relative-normal-interval";
+    const j = job({ type: "interval", schedule: "1s", intervalMs: 1_000 });
+    const storage = makeSharedStorage([j]);
+    const sentA: string[] = [];
+    const sentB: string[] = [];
+    const piA = makePi();
+    const piB = makePi();
+    piA.sendUserMessage = (p: string) => sentA.push(p);
+    piB.sendUserMessage = (p: string) => sentB.push(p);
+    const schedA = new CronScheduler(storage, piA, makeCtx("session-A", cwd));
+    const schedB = new CronScheduler(storage, piB, makeCtx("session-B", cwd));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(400);
+      schedA.start();
+      await vi.advanceTimersByTimeAsync(200);
+      schedB.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sentA).toHaveLength(1);
+      expect(sentB).toHaveLength(1);
+    } finally {
+      await schedA.stop();
+      await schedB.stop();
+    }
+  });
+
+  it("periodically prunes expired claim buckets while the scheduler stays open", async () => {
+    const cwd = "/proj-periodic-claim-prune";
+    const storage = makeSharedStorage([]);
+    const scheduler = new CronScheduler(storage, makePi(), makeCtx("session-A", cwd));
+
+    vi.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 10, 24, 15, 30);
+      vi.setSystemTime(now);
+      scheduler.start();
+      expect(tryClaim(cwd, job(), "session-A", now)).not.toBeNull();
+      expect(claimFiles()).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(CLAIM_MAX_AGE_MS + 2 * 60 * 60 * 1000);
+      expect(claimFiles()).toHaveLength(0);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("reconciles a save that races watcher registration during start", async () => {
+    const cwd = "/proj-watch-start-race";
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+    const j = job({ type: "once", schedule: new Date(occurrence).toISOString() });
+    let jobs: CronJob[] = [];
+    let watched = false;
+    let injected = false;
+    const storage = {
+      getAllJobs: () => {
+        if (watched && !injected) {
+          jobs = [{ ...j }];
+          injected = true;
+        }
+        return jobs.map((candidate) => ({ ...candidate }));
+      },
+      getJob: (id: string) => {
+        const found = jobs.find((candidate) => candidate.id === id);
+        return found ? { ...found } : undefined;
+      },
+      updateJob: (id: string, partial: Partial<CronJob>) => {
+        const found = jobs.find((candidate) => candidate.id === id);
+        if (!found) return false;
+        Object.assign(found, partial);
+        return true;
+      },
+      watch: () => {
+        watched = true;
+        return () => {};
+      },
+    } as any;
+    const scheduler = new CronScheduler(storage, makePi(), makeCtx("session-A", cwd));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(occurrence - 10_000);
+      scheduler.start();
+      expect(injected).toBe(true);
+      expect((scheduler as any).jobs.has(j.id)).toBe(true);
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("fails safely on a malformed store and converges after a valid save", async () => {
+    const cwd = "/proj-watch-malformed-recovery";
+    const occurrence = Date.UTC(2026, 10, 24, 15, 0, 0);
+    const j = job({ type: "once", schedule: new Date(occurrence).toISOString() });
+    let valid = true;
+    const watchers = new Set<() => void>();
+    const jobs = new Map([[j.id, { ...j }]]);
+    const storage = {
+      getAllJobs: () => valid ? [...jobs.values()].map((candidate) => ({ ...candidate })) : [],
+      getJob: (id: string) => {
+        const found = jobs.get(id);
+        return found ? { ...found } : undefined;
+      },
+      updateJob: (id: string, partial: Partial<CronJob>) => {
+        const found = jobs.get(id);
+        if (!found) return false;
+        Object.assign(found, partial);
+        return true;
+      },
+      watch: (callback: () => void) => {
+        watchers.add(callback);
+        return () => watchers.delete(callback);
+      },
+    } as any;
+    const scheduler = new CronScheduler(storage, makePi(), makeCtx("session-A", cwd));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(occurrence - 10_000);
+      scheduler.start();
+      expect(scheduler.getNextRun(j.id)).not.toBeNull();
+      valid = false;
+      for (const callback of watchers) callback();
+      expect(scheduler.getNextRun(j.id)).toBeNull();
+      valid = true;
+      for (const callback of watchers) callback();
+      expect(scheduler.getNextRun(j.id)).not.toBeNull();
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
+  it("does not execute or disable a replaced one-shot from a stale immediate callback", async () => {
+    const cwd = "/proj-stale-immediate-once";
+    const oldOccurrence = Date.now() + 60_000;
+    const newOccurrence = oldOccurrence + 60_000;
+    const j = job({
+      type: "once",
+      schedule: new Date(oldOccurrence).toISOString(),
+      singleton: true,
+      singletonPreferTui: false,
+    });
+    const storage = makeSharedStorage([j]);
+    const pi = makePi();
+    const sent: string[] = [];
+    pi.sendUserMessage = (p: string) => sent.push(p);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("tui", cwd, "tui"));
+    scheduler.addJob(j);
+    storage.updateJob(j.id, { schedule: new Date(newOccurrence).toISOString() });
+
+    const cron = (scheduler as any).jobs.get(j.id);
+    await cron.trigger();
+
+    expect(sent).toHaveLength(0);
+    expect(storage.getJob(j.id)!.enabled).toBe(true);
+    await scheduler.stop();
   });
 
   it("non-singleton workdir jobs still fire in every session (back-compat)", async () => {
