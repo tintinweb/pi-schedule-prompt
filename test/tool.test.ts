@@ -48,6 +48,8 @@ function makeCtx(sessionId = "test-session") {
 function buildTool(
   seedJobs: CronJob[] = [],
   getDefaultScope: () => "session" | "workdir" = () => "session",
+  getDefaultSingleton: () => boolean = () => false,
+  getDefaultSingletonPreferTui: () => boolean = () => true,
 ) {
   const storage = makeStorage(seedJobs);
   const scheduler = makeScheduler();
@@ -55,6 +57,8 @@ function buildTool(
     () => storage,
     () => scheduler,
     getDefaultScope,
+    getDefaultSingleton,
+    getDefaultSingletonPreferTui,
   );
   return { tool, storage };
 }
@@ -501,6 +505,130 @@ describe("schedule_prompt — idle jobs", () => {
     );
     expect(result.details.error).toContain("Invalid idle duration");
     expect(storage.getAllJobs()).toHaveLength(0);
+  });
+});
+
+describe("schedule_prompt — singleton scope and validation", () => {
+  it("creates a workdir singleton when singleton=true is explicit under default session scope", async () => {
+    const { tool, storage } = buildTool();
+    const result = await tool.execute(
+      "call",
+      { action: "add", schedule: "+10s", type: "once", prompt: "test", singleton: true } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(result.details?.error).toBeUndefined();
+    expect(storage.getAllJobs()[0]).toMatchObject({
+      session: undefined,
+      singleton: true,
+      singletonPreferTui: true,
+    });
+  });
+
+  it("uses singleton and TUI defaults for an explicit workdir job", async () => {
+    const { tool, storage } = buildTool([], () => "session", () => true, () => false);
+    const result = await tool.execute(
+      "call",
+      { action: "add", scope: "workdir", schedule: "+10s", type: "once", prompt: "test" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(result.details?.error).toBeUndefined();
+    expect(storage.getAllJobs()[0]).toMatchObject({
+      session: undefined,
+      singleton: true,
+      singletonPreferTui: false,
+    });
+  });
+
+  it("preserves an explicit ordinary shared choice despite singleton defaults", async () => {
+    const { tool, storage } = buildTool([], () => "session", () => true, () => false);
+    const result = await tool.execute(
+      "call",
+      {
+        action: "add",
+        scope: "workdir",
+        singleton: false,
+        schedule: "+10s",
+        type: "once",
+        prompt: "test",
+      } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(result.details?.error).toBeUndefined();
+    expect(storage.getAllJobs()[0]).toMatchObject({
+      session: undefined,
+      singleton: false,
+      singletonPreferTui: undefined,
+    });
+  });
+
+  it("rejects explicit session scope combined with singleton", async () => {
+    const { tool, storage } = buildTool();
+    const result = await tool.execute(
+      "call",
+      {
+        action: "add",
+        scope: "session",
+        singleton: true,
+        schedule: "+10s",
+        type: "once",
+        prompt: "test",
+      } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(result.details?.error).toMatch(/session-bound.*singleton|singleton.*session-bound/i);
+    expect(storage.getAllJobs()).toHaveLength(0);
+  });
+
+  it("rejects singleton idle jobs on add and update", async () => {
+    const { tool, storage } = buildTool();
+    const added = await tool.execute(
+      "call-add",
+      { action: "add", schedule: "10m", type: "idle", prompt: "test", singleton: true } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(added.details?.error).toMatch(/idle.*singleton|singleton.*idle/i);
+    expect(storage.getAllJobs()).toHaveLength(0);
+
+    const idle = exampleJob({ id: "idle-job", type: "idle", schedule: "10m", intervalMs: 600_000 });
+    storage.addJob(idle);
+    const updated = await tool.execute(
+      "call-update",
+      { action: "update", jobId: idle.id, singleton: true } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(updated.details?.error).toMatch(/idle.*singleton|singleton.*idle/i);
+    expect(storage.getJob(idle.id)!.singleton).toBeUndefined();
+  });
+
+  it("rejects enabling singleton on a session-bound job", async () => {
+    const bound = exampleJob({ id: "bound-job", session: "test-session" });
+    const { tool, storage } = buildTool([bound]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: bound.id, singleton: true } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(result.details?.error).toMatch(/session-bound.*singleton|singleton.*session-bound/i);
+    expect(storage.getJob(bound.id)!.singleton).toBeUndefined();
   });
 });
 

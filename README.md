@@ -122,8 +122,8 @@ The widget displays below your editor (only when jobs exist):
 
 `/schedule-prompt` opens a two-item menu:
 
-- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` toggle scope (session-bound ↔ shared with all pi sessions in this project), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
-- **Settings** — widget visibility and the default scope for new jobs (`Bind new jobs to session: yes/no`). Persists across sessions.
+- **Jobs** — full-screen overlay listing every scheduled prompt in this cwd. Your session's jobs are at the top; jobs bound to other sessions render read-only below. Hotkeys: `↑`/`↓` select, `a` add (opens the input series — name/type/schedule/prompt/scope/confirm), `t` toggle enabled, `s` cycle scope (session-bound → shared → singleton for cron/once/interval; session-bound ↔ shared for idle), `x` remove (with `y/n` confirm), `c` cleanup all disabled jobs, `q`/`esc` close.
+- **Settings** — widget visibility, default scope for new jobs, singleton default for supported workdir jobs, and the default TUI preference for new singleton jobs. Persists across sessions.
 
 ### Tool Parameters (`schedule_prompt`)
 
@@ -140,6 +140,9 @@ The widget displays below your editor (only when jobs exist):
 | `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
 | `extensions` | boolean or string[] | no | Subagent-only. If `true`, loads all registered extensions; an array of package names loads only those. Unset or empty array = none (default). Enabling extensions also grants the subagent the full builtin toolset (not just the default read/write/bash set) — required for extension-provided tools to activate. No-op for inline (no-model) jobs |
 | `skills` | boolean or string[] | no | Subagent-only. If `true`, loads all skills; an array of skill names loads only those. Unset or empty array = none (default). No-op for inline (no-model) jobs |
+| `scope` | `session` \| `workdir` | no | Add only. Bind to this pi or load in every pi in this cwd. If omitted, `singleton: true` implies `workdir`; otherwise the configured default scope applies. Use Jobs UI scope cycling to change an existing job |
+| `singleton` | boolean | no | Cron/once/interval workdir jobs only. If `true`, exactly one pi session executes each scheduled occurrence. Explicit `singleton: true` without `scope` implies `workdir`; session+singleton and idle+singleton are rejected. Default `false` = fire in every session |
+| `singletonPreferTui` | boolean | no | Singleton workdir jobs only. `true` (default) lets a TUI claim immediately while headless sessions yield 1.5s; `false` lets the first claimant of any mode win. Per-job; the creation-time default is `defaultSingletonPreferTui` |
 
 ### Schedule Formats
 
@@ -179,7 +182,7 @@ Times are displayed in local time with their UTC offset. Cron expressions fire i
 
 **Storage:**
 
-- Job data: `<agentDir>/schedule-prompts/projects/<key>.json`, one file per project (atomic writes, auto-created). `<agentDir>` is pi's agent directory: `$PI_CODING_AGENT_DIR` if set, else `~/.pi/agent`, so each pi profile has its own jobs. `<key>` is the SHA-256 of the project's real path; the file's `cwd` field names the project.
+- Job data: `<agentDir>/schedule-prompts/projects/<key>.json`, one file per project (auto-created). `<agentDir>` is pi's agent directory: `$PI_CODING_AGENT_DIR` if set, else `~/.pi/agent`, so each pi profile has its own jobs. `<key>` is the SHA-256 of the project's real path; the file's `cwd` field names the project. A bounded cross-process lock serializes each complete read-modify-write transaction, including stale-owner recovery, and unique temp files plus atomic rename keep reader snapshots intact.
 - Settings: two-layer config — `<agentDir>/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load. The project file is read and written only when pi trusts the project.
 - Upgrading from 0.4.x: when pi trusts the project, its old `<cwd>/.pi/schedule-prompts.json` is merged into the new store once and left in place as a backup. While the project is untrusted it is not imported, and pi shows a warning; it is imported once you trust the project.
 - Trust follows pi's own decision (`ctx.isProjectTrusted()`). pi asks only when `.pi/` contains one of its protected files (`settings.json`, `mcp.json`, `extensions`, …), so a project whose `.pi/` holds only this extension's files is trusted automatically unless you saved "do not trust" for it with `/trust`. Review a cloned repo's `.pi/schedule-prompts.json` before opening pi there.
@@ -190,12 +193,28 @@ By default a job fires only in the session that created it — opening two pi se
 
 Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
 
+**Live store synchronization:**
+
+Every scheduler registers its store-parent watcher before reading the initial snapshot, closing the startup missed-save race. Tool, Jobs UI, and hand-edit changes reconcile timers in every session without `/reload`: new enabled jobs arm, schedule/scope changes reschedule, and removed/disabled/foreign jobs disarm. Terminal watcher errors are retried with bounded backoff and followed by full reconciliation; cleanup cancels pending retries. This works with the widget hidden or initially empty and does not use polling or `pi.events` (which is session-local). Prompt/model-only edits do not reset timers in either the originating or peer sessions; execution reads the latest payload, with enabled/scope/timer-signature checks after the singleton headless grace delay.
+
+**Singleton workdir jobs (fire once per run):**
+
+A shared (workdir) job normally fires in *every* pi session in the cwd — two open pis means two runs per occurrence. Cron, one-shot, and interval jobs support `"singleton": true`; idle jobs do not, because independent idle stretches have no shared occurrence to claim. The tool's explicit `singleton: true` selects workdir scope when `scope` is omitted. Session+singleton and idle+singleton combinations are rejected instead of being silently ignored. In the Jobs view, `s` cycles supported jobs through session → shared → singleton and idle jobs through session ↔ shared.
+
+Each scheduled occurrence has a stable identity: one-shots use their target timestamp, cron callbacks use the occurrence armed by Croner (including every-second schedules and delayed callbacks), and singleton intervals use epoch-aligned occurrences shared across staggered sessions. Claim files use O_EXCL creation under `<agentDir>/schedule-prompts/claims/<projectKey>/<jobHash>/<UTC-hour>/<tickHash>.claim`; only the winner executes and is recorded as `lastClaimBy`. `EEXIST` is the sole normal losing result. Any other coordination error fails closed: no prompt runs and the job records an error rather than silently executing everywhere.
+
+With `singletonPreferTui: true` (the default), an attached TUI (`ctx.mode === "tui"`) claims immediately while RPC/headless sessions wait 1.5 seconds. The wait is cancelled by shutdown or schedule/scope/singleton changes. With several TUIs the first claimant wins; with no TUI the first headless claimant after grace wins. Set `singletonPreferTui: false` to remove the delay.
+
+Semantics are at-most-once per claimed occurrence, not exactly-once recovery: if the winner crashes mid-run, that occurrence is forfeited and its claim is never stolen. Seven-day claim retention is the supported late-contender safety window. Claims are sharded by job and UTC occurrence hour, pruned at startup and hourly while a scheduler remains open, and expired hour buckets are removed wholesale to bound long-running growth.
+
+Absent/false keeps the historical fire-in-every-session behavior. New jobs can default to singleton via `/schedule-prompt → Settings → Singleton workdir jobs` (`defaultSingleton`), which controls the add flow's default scope choice without preventing an explicit ordinary shared choice. `singletonPreferTui` is read fresh at fire time; `defaultSingletonPreferTui` (default true) is persisted when creating new singleton jobs and affects new jobs only. Existing jobs with no preference behave as true.
+
 **Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
 
 **Scheduler:**
 
-- Uses `croner` library for cron expressions and one-shots
-- Native `setInterval` for intervals
+- Uses `croner` library for cron expressions and one-shots, preserving the armed occurrence for claims
+- Native `setInterval` for ordinary intervals; epoch-aligned recursive timeouts for singleton intervals
 - Tracks: next run, last run, execution count, status (running/success/error)
 
 **Execution:**

@@ -128,13 +128,19 @@ export class JobsView implements Component {
       return;
     }
     if (matchesKey(data, "s")) {
-      // Toggle this job's binding: session-bound ↔ shared. Other pi sessions
-      // already running in this cwd won't see the change until they restart;
-      // their in-memory schedulers are stale until session_start.
+      // Supported types cycle session → shared → singleton → session. Idle
+      // jobs have no shared occurrence to claim, so they cycle only
+      // session ↔ ordinary shared. Store watchers update other live sessions.
       if (this.isSelectionForeign()) return;
-      const session = sel.session ? undefined : this.mySessionId;
-      this.storage.updateJob(sel.id, { session });
-      this.scheduler.updateJob(sel.id, { ...sel, session });
+      const next = sel.session
+        ? { session: undefined as string | undefined, singleton: false }
+        : sel.singleton
+          ? { session: this.mySessionId, singleton: undefined as boolean | undefined }
+          : sel.type === "idle"
+            ? { session: this.mySessionId, singleton: undefined as boolean | undefined }
+            : { session: undefined as string | undefined, singleton: true };
+      this.storage.updateJob(sel.id, next);
+      this.scheduler.updateJob(sel.id, { ...sel, ...next });
       this.refresh();
       return;
     }
@@ -244,7 +250,10 @@ export class JobsView implements Component {
       SCHED_W,
     ).padEnd(SCHED_W);
     const prompt = truncate(job.prompt, PROMPT_W).padEnd(PROMPT_W);
-    const tag = !job.session && !isForeign ? this.theme.fg("dim", " [shared]") : "";
+    const tag =
+      !job.session && !isForeign
+        ? this.theme.fg("dim", job.singleton ? " [singleton]" : " [shared]")
+        : "";
 
     return ` ${indicator} ${icon} ${name}  ${sched}  ${prompt}${tag}`;
   }

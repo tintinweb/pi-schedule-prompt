@@ -9,12 +9,15 @@ import { CronToolParams } from "./types.js";
 
 /**
  * Create the schedule_prompt tool definition.
- * `getDefaultScope` is a getter so live setting toggles affect the next `add`.
+ * `getDefaultScope` / `getDefaultSingleton` / `getDefaultSingletonPreferTui`
+ * are getters so live setting toggles affect the next `add`.
  */
 export function createCronTool(
   getStorage: () => CronStorage,
   getScheduler: () => CronScheduler,
   getDefaultScope: () => JobScope = () => "session",
+  getDefaultSingleton: () => boolean = () => false,
+  getDefaultSingletonPreferTui: () => boolean = () => true,
 ): ToolDefinition<typeof CronToolParams, CronToolDetails> {
   return {
     name: "schedule_prompt",
@@ -87,9 +90,21 @@ export function createCronTool(
             const schedule = validated.schedule;
             const intervalMs = validated.intervalMs;
 
+            const scope =
+              params.scope ?? (params.singleton === true ? "workdir" : getDefaultScope());
+            if (scope === "session" && params.singleton === true) {
+              throw new Error("Session-bound jobs cannot be singleton; use scope='workdir'.");
+            }
+            if (type === "idle" && params.singleton === true) {
+              throw new Error("Singleton idle jobs are unsupported; use cron, once, or interval.");
+            }
+
             const now = new Date().toISOString();
-            const session =
-              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
+            const session = scope === "session" ? ctx.sessionManager.getSessionId() : undefined;
+            const singleton =
+              session || type === "idle"
+                ? undefined
+                : (params.singleton ?? getDefaultSingleton());
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -106,6 +121,11 @@ export function createCronTool(
               extensions: params.extensions,
               skills: params.skills,
               session,
+              singleton,
+              singletonPreferTui:
+                session || !singleton
+                  ? undefined
+                  : (params.singletonPreferTui ?? getDefaultSingletonPreferTui()),
             };
 
             storage.addJob(job);
@@ -246,6 +266,13 @@ export function createCronTool(
               );
             }
 
+            if (params.singleton === true && job.session) {
+              throw new Error("Session-bound jobs cannot be singleton; change scope in the Jobs UI first.");
+            }
+            if (params.singleton === true && job.type === "idle") {
+              throw new Error("Singleton idle jobs are unsupported; use cron, once, or interval.");
+            }
+
             const updates: Partial<CronJob> = {};
             if (params.name && params.name !== job.name) {
               if (storage.hasJobWithName(params.name)) {
@@ -261,6 +288,10 @@ export function createCronTool(
             if (params.notify !== undefined) updates.notify = params.notify;
             if (params.extensions !== undefined) updates.extensions = params.extensions;
             if (params.skills !== undefined) updates.skills = params.skills;
+            if (params.singleton !== undefined) updates.singleton = params.singleton;
+            if (params.singletonPreferTui !== undefined) {
+              updates.singletonPreferTui = params.singletonPreferTui;
+            }
 
             if (params.schedule) {
               // Same resolution rules as `add`: relative time (`+5m`) → ISO,

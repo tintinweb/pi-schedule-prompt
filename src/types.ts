@@ -68,6 +68,21 @@ export interface CronJob {
   skills?: boolean | string[];
   /** Session id this job is bound to. When absent, every pi in the cwd loads it. */
   session?: string;
+  /**
+   * Fire once per scheduled occurrence across sessions. Supported for
+   * cron/once/interval workdir jobs (no `session`), never idle jobs.
+   * An O_EXCL claim (see `claims.ts`) elects one session; coordination errors
+   * fail closed. Absent/false keeps the historical every-session behavior.
+   */
+  singleton?: boolean;
+  /**
+   * Per-job TUI preference for singleton workdir jobs. True (or absent)
+   * lets a TUI claim immediately while headless sessions yield; false lets
+   * every session claim immediately. Ignored for non-singleton/session jobs.
+   */
+  singletonPreferTui?: boolean;
+  /** Session id that won the last singleton claim (informational). */
+  lastClaimBy?: string;
 }
 
 /**
@@ -167,6 +182,24 @@ export const CronToolParams = Type.Object({
         description: "Only for jobs with 'model' set. The separate session loads only these skill names.",
       }),
     ])
+  ),
+  scope: Type.Optional(
+    StringEnum(["session", "workdir"], {
+      description:
+        "Add only. 'session' binds the job to this pi; 'workdir' loads it in every pi in this cwd. If omitted, singleton=true implies workdir; otherwise the configured default scope applies. Use Jobs UI scope cycling to change an existing job's binding.",
+    })
+  ),
+  singleton: Type.Optional(
+    Type.Boolean({
+      description:
+        "Only for cron/once/interval jobs without a session binding (workdir scope). If true, exactly one session executes each scheduled occurrence (per-occurrence claim file). Explicit singleton=true without scope implies workdir. Unsupported for idle jobs and incompatible with session scope. Default false: every session fires it (may duplicate).",
+    })
+  ),
+  singletonPreferTui: Type.Optional(
+    Type.Boolean({
+      description:
+        "Only for singleton workdir jobs. If true (default), an interactive TUI claims immediately while RPC/headless sessions yield 1.5s so the TUI gets the first opportunity. If false, every session claims immediately and the first claimant of any mode wins. Ignored for non-singleton and session-bound jobs.",
+    })
   ),
 });
 
